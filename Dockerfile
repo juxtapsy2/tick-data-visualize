@@ -36,9 +36,6 @@ COPY services/backend /build/services/backend
 # Work in backend directory
 WORKDIR /build/services/backend
 
-# Debug: List directory contents
-RUN ls -la && ls -la cmd/ || echo "cmd directory not found"
-
 # Download dependencies and build
 RUN go mod tidy && go mod download
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
@@ -113,14 +110,11 @@ COPY docker/supervisord/supervisord.conf /etc/supervisord.conf
 RUN mkdir -p /var/log/supervisor /var/run/nginx /var/log/nginx
 
 # Fix permissions
-RUN chown -R app:app /app /usr/share/nginx/html /var/log/supervisor /var/run/nginx /var/log/nginx && \
+RUN chown -R app:app /app /usr/share/nginx/html && \
     chmod -R 755 /app
-
-# Switch to app user for running services
-USER app
 
 # Expose port 80 (Nginx)
 EXPOSE 80
 
-# Start supervisord
+# Start supervisord as root (will drop privileges for individual programs)
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisord.conf"]

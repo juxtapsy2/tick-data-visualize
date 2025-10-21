@@ -1,0 +1,39 @@
+# Git
+.git
+.gitignore
+
+# Go workspace file (causes issues in Docker builds)
+go.work
+go.work.sum
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.local
+*.env
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+*.md
+!README.md
+
+# Docker
+docker-compose.yml
+docker-compose.override.yml
+Dockerfile*
+!Dockerfile
+
+# Build artifacts
+bin/
+dist/
+*.log
+logs/

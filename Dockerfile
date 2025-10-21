@@ -27,11 +27,11 @@ RUN apk add --no-cache git make
 
 WORKDIR /build
 
-# Copy shared library first
-COPY shared/ ./shared/
+# Copy shared library
+COPY shared/ /build/shared/
 
-# Copy backend service code (maintain directory structure for go.mod replace)
-COPY services/backend/ ./services/backend/
+# Copy backend service code (use absolute path)
+COPY services/backend/ /build/services/backend/
 
 # Work in backend directory
 WORKDIR /build/services/backend
@@ -52,11 +52,11 @@ RUN apk add --no-cache git make
 
 WORKDIR /build
 
-# Copy shared library first
-COPY shared/ ./shared/
+# Copy shared library
+COPY shared/ /build/shared/
 
-# Copy data generator service code (maintain directory structure for go.mod replace)
-COPY services/data-generator/ ./services/data-generator/
+# Copy data generator service code (use absolute path)
+COPY services/data-generator/ /build/services/data-generator/
 
 # Work in data generator directory
 WORKDIR /build/services/data-generator

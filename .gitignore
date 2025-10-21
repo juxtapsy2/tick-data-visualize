@@ -41,8 +41,8 @@ docker-compose.override.yml
 # Config files (use examples)
 configs/config.yaml
 
-# Build artifacts
-market-service
+# Build artifacts (binary at root only, not cmd directory)
+/market-service
 
 # Logs
 *.log

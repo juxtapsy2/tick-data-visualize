@@ -28,13 +28,16 @@ RUN apk add --no-cache git make
 WORKDIR /build
 
 # Copy shared library
-COPY shared/ /build/shared/
+COPY shared /build/shared
 
-# Copy backend service code (use absolute path)
-COPY services/backend/ /build/services/backend/
+# Copy backend service code
+COPY services/backend /build/services/backend
 
 # Work in backend directory
 WORKDIR /build/services/backend
+
+# Debug: List directory contents
+RUN ls -la && ls -la cmd/ || echo "cmd directory not found"
 
 # Download dependencies and build
 RUN go mod tidy && go mod download
@@ -53,10 +56,10 @@ RUN apk add --no-cache git make
 WORKDIR /build
 
 # Copy shared library
-COPY shared/ /build/shared/
+COPY shared /build/shared
 
-# Copy data generator service code (use absolute path)
-COPY services/data-generator/ /build/services/data-generator/
+# Copy data generator service code
+COPY services/data-generator /build/services/data-generator
 
 # Work in data generator directory
 WORKDIR /build/services/data-generator

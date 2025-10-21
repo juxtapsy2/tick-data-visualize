@@ -30,11 +30,11 @@ WORKDIR /build
 # Copy shared library
 COPY shared/ ./shared/
 
-# Copy backend service code
-COPY services/backend/ ./services/backend/
+# Copy backend service code and set working directory
+COPY services/backend/ ./backend/
 
 # Work in backend directory
-WORKDIR /build/services/backend
+WORKDIR /build/backend
 
 # Download dependencies and build
 RUN go mod tidy && go mod download
@@ -56,10 +56,10 @@ WORKDIR /build
 COPY shared/ ./shared/
 
 # Copy data generator service code
-COPY services/data-generator/ ./services/data-generator/
+COPY services/data-generator/ ./data-generator/
 
 # Work in data generator directory
-WORKDIR /build/services/data-generator
+WORKDIR /build/data-generator
 
 # Download dependencies and build
 RUN go mod tidy && go mod download

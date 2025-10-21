@@ -1,0 +1,49 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# Environment variables
+.env
+.env.local
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated protobuf code
+proto/*.pb.go
+
+# Docker volumes
+docker-compose.override.yml
+
+# Config files (use examples)
+configs/config.yaml
+
+# Build artifacts
+market-service
+
+# Logs
+*.log
+logs/

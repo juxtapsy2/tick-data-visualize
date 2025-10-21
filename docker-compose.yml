@@ -1,0 +1,123 @@
+services:
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: market-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - market-network
+
+  # Market Data Service (Microservice)
+  market-service:
+    build:
+      context: .
+      dockerfile: services/backend/Dockerfile
+    container_name: market-service
+    environment:
+      # Server
+      MARKET_SERVER_HTTP_PORT: ":8080"
+      MARKET_SERVER_ENVIRONMENT: "development"
+      MARKET_SERVER_SHUTDOWN_TIMEOUT: "30s"
+
+      # Database (connects to external TimescaleDB)
+      MARKET_DATABASE_HOST: ${DB_HOST:-host.docker.internal}
+      MARKET_DATABASE_PORT: ${DB_PORT:-5433}
+      MARKET_DATABASE_USER: ${DB_USER:-market_user}
+      MARKET_DATABASE_PASSWORD: ${DB_PASSWORD:-market_password}
+      MARKET_DATABASE_DATABASE: ${DB_NAME:-trading_db}
+      MARKET_DATABASE_SSL_MODE: "disable"
+      MARKET_DATABASE_MAX_CONNECTIONS: "25"
+      MARKET_DATABASE_CONN_MAX_LIFETIME: "5m"
+      MARKET_DATABASE_LISTEN_CHANNEL: "market_data_updates"
+
+      # Redis
+      MARKET_REDIS_ADDRESS: "redis:6379"
+      MARKET_REDIS_PASSWORD: ""
+      MARKET_REDIS_DB: "0"
+      MARKET_REDIS_MAX_RETRIES: "3"
+      MARKET_REDIS_DIAL_TIMEOUT: "5s"
+      MARKET_REDIS_READ_TIMEOUT: "3s"
+
+      # Logging
+      MARKET_LOGGING_LEVEL: "debug"
+      MARKET_LOGGING_FORMAT: "console"
+      MARKET_LOGGING_TIME_FORMAT: "rfc3339"
+
+      # Market
+      MARKET_MARKET_VN30_TABLE_NAME: "vn30_table"
+      MARKET_MARKET_HNX_TABLE_NAME: "hnx_table"
+      MARKET_MARKET_CACHE_TTL: "24h"
+      MARKET_MARKET_STREAM_BUFFER_SIZE: "100"
+      MARKET_MARKET_MAX_CONCURRENT_CONNECTIONS: "1000"
+    ports:
+      - "8080:8080"   # HTTP (health checks + WebSocket)
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - market-network
+
+  # Data Generator (Microservice)
+  data-generator:
+    build:
+      context: .
+      dockerfile: services/data-generator/Dockerfile
+    container_name: data-generator
+    environment:
+      # Database (connects to external TimescaleDB)
+      MARKET_DATABASE_HOST: ${DB_HOST:-host.docker.internal}
+      MARKET_DATABASE_PORT: ${DB_PORT:-5433}
+      MARKET_DATABASE_USER: ${DB_USER:-market_user}
+      MARKET_DATABASE_PASSWORD: ${DB_PASSWORD:-market_password}
+      MARKET_DATABASE_DATABASE: ${DB_NAME:-trading_db}
+      MARKET_DATABASE_SSL_MODE: "disable"
+      MARKET_DATABASE_MAX_CONNECTIONS: "5"
+      MARKET_DATABASE_CONN_MAX_LIFETIME: "5m"
+
+      # Logging
+      MARKET_LOGGING_LEVEL: "debug"
+      MARKET_LOGGING_FORMAT: "console"
+      MARKET_LOGGING_TIME_FORMAT: "rfc3339"
+    depends_on:
+      market-service:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - market-network
+
+  # Frontend (React + TypeScript + ECharts)
+  frontend:
+    build:
+      context: .
+      dockerfile: services/frontend/Dockerfile
+    container_name: market-frontend
+    ports:
+      - "3010:80"
+    depends_on:
+      - market-service
+    networks:
+      - market-network
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  market-network:
+    driver: bridge

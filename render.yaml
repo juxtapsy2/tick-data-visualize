@@ -1,0 +1,145 @@
+# Render Deployment Configuration
+# TimescaleDB hosted on Railway, Application services on Render
+
+services:
+  # Redis Cache (Managed Redis on Render)
+  - type: redis
+    name: market-redis
+    plan: starter
+    region: oregon
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
+
+  # Backend Market Service (Go WebSocket + REST API)
+  - type: web
+    name: market-service
+    runtime: docker
+    dockerfilePath: ./services/backend/Dockerfile
+    dockerContext: .
+    region: oregon
+    plan: starter
+    healthCheckPath: /health/live
+    envVars:
+      # Server Config
+      - key: MARKET_SERVER_HTTP_PORT
+        value: :8080
+      - key: MARKET_SERVER_ENVIRONMENT
+        value: production
+      - key: MARKET_SERVER_SHUTDOWN_TIMEOUT
+        value: 30s
+
+      # Database Config (Railway TimescaleDB)
+      - key: MARKET_DATABASE_HOST
+        sync: false  # Set in Render dashboard from Railway
+      - key: MARKET_DATABASE_PORT
+        sync: false  # Set in Render dashboard from Railway
+      - key: MARKET_DATABASE_USER
+        sync: false  # Set in Render dashboard from Railway
+      - key: MARKET_DATABASE_PASSWORD
+        sync: false  # Set in Render dashboard from Railway (secret)
+      - key: MARKET_DATABASE_DATABASE
+        sync: false  # Set in Render dashboard from Railway
+      - key: MARKET_DATABASE_SSL_MODE
+        value: require
+      - key: MARKET_DATABASE_MAX_CONNECTIONS
+        value: 25
+      - key: MARKET_DATABASE_CONN_MAX_LIFETIME
+        value: 5m
+      - key: MARKET_DATABASE_LISTEN_CHANNEL
+        value: market_data_updates
+
+      # Redis Config (Auto-populated from Render Redis)
+      - key: MARKET_REDIS_ADDRESS
+        fromService:
+          type: redis
+          name: market-redis
+          property: connectionString
+      - key: MARKET_REDIS_PASSWORD
+        fromService:
+          type: redis
+          name: market-redis
+          property: password
+      - key: MARKET_REDIS_DB
+        value: 0
+      - key: MARKET_REDIS_MAX_RETRIES
+        value: 3
+      - key: MARKET_REDIS_DIAL_TIMEOUT
+        value: 5s
+      - key: MARKET_REDIS_READ_TIMEOUT
+        value: 3s
+
+      # Logging Config
+      - key: MARKET_LOGGING_LEVEL
+        value: info
+      - key: MARKET_LOGGING_FORMAT
+        value: json
+      - key: MARKET_LOGGING_TIME_FORMAT
+        value: unix
+
+      # Market Config
+      - key: MARKET_MARKET_VN30_TABLE_NAME
+        value: vn30_table
+      - key: MARKET_MARKET_HNX_TABLE_NAME
+        value: hnx_table
+      - key: MARKET_MARKET_CACHE_TTL
+        value: 24h
+      - key: MARKET_MARKET_STREAM_BUFFER_SIZE
+        value: 100
+      - key: MARKET_MARKET_MAX_CONCURRENT_CONNECTIONS
+        value: 1000
+
+  # Data Generator Service (CSV to TimescaleDB)
+  - type: worker
+    name: data-generator
+    runtime: docker
+    dockerfilePath: ./services/data-generator/Dockerfile
+    dockerContext: .
+    region: oregon
+    plan: starter
+    envVars:
+      # Database Config (Railway TimescaleDB)
+      - key: MARKET_DATABASE_HOST
+        sync: false  # Set in Render dashboard from Railway
+      - key: MARKET_DATABASE_PORT
+        sync: false  # Set in Render dashboard from Railway
+      - key: MARKET_DATABASE_USER
+        sync: false  # Set in Render dashboard from Railway
+      - key: MARKET_DATABASE_PASSWORD
+        sync: false  # Set in Render dashboard from Railway (secret)
+      - key: MARKET_DATABASE_DATABASE
+        sync: false  # Set in Render dashboard from Railway
+      - key: MARKET_DATABASE_SSL_MODE
+        value: require
+      - key: MARKET_DATABASE_MAX_CONNECTIONS
+        value: 5
+      - key: MARKET_DATABASE_CONN_MAX_LIFETIME
+        value: 5m
+
+      # Logging Config
+      - key: MARKET_LOGGING_LEVEL
+        value: info
+      - key: MARKET_LOGGING_FORMAT
+        value: json
+      - key: MARKET_LOGGING_TIME_FORMAT
+        value: unix
+
+  # Frontend (React Application)
+  - type: web
+    name: market-frontend
+    runtime: docker
+    dockerfilePath: ./services/frontend/Dockerfile
+    dockerContext: .
+    region: oregon
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: REACT_APP_WS_URL
+        fromService:
+          type: web
+          name: market-service
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: REACT_APP_API_URL
+        fromService:
+          type: web
+          name: market-service
+          envVarKey: RENDER_EXTERNAL_URL

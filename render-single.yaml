@@ -1,0 +1,100 @@
+# Render Single-Service Deployment Configuration
+# All components (Frontend + Backend + Data Generator) in one container
+# TimescaleDB hosted on Railway
+
+services:
+  # All-in-One Market Service (Nginx + Backend + Data Generator)
+  - type: web
+    name: market-all-in-one
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: oregon
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      # Server Config
+      - key: MARKET_SERVER_HTTP_PORT
+        value: :8080
+      - key: MARKET_SERVER_ENVIRONMENT
+        value: production
+      - key: MARKET_SERVER_SHUTDOWN_TIMEOUT
+        value: 30s
+
+      # Database Config (Railway TimescaleDB)
+      # Set these in Render dashboard from your Railway database
+      - key: MARKET_DATABASE_HOST
+        sync: false
+      - key: MARKET_DATABASE_PORT
+        sync: false
+      - key: MARKET_DATABASE_USER
+        sync: false
+      - key: MARKET_DATABASE_PASSWORD
+        sync: false
+      - key: MARKET_DATABASE_DATABASE
+        sync: false
+      - key: MARKET_DATABASE_SSL_MODE
+        value: require
+      - key: MARKET_DATABASE_MAX_CONNECTIONS
+        value: 25
+      - key: MARKET_DATABASE_CONN_MAX_LIFETIME
+        value: 5m
+      - key: MARKET_DATABASE_LISTEN_CHANNEL
+        value: market_data_updates
+
+      # Redis Config
+      # You have two options:
+      # Option 1: Add Render Redis (uncomment the redis service below and the fromService references)
+      # Option 2: Use external Redis (set these manually in dashboard)
+      - key: MARKET_REDIS_ADDRESS
+        sync: false  # Set manually or use fromService
+      - key: MARKET_REDIS_PASSWORD
+        sync: false  # Set manually or use fromService
+      - key: MARKET_REDIS_DB
+        value: 0
+      - key: MARKET_REDIS_MAX_RETRIES
+        value: 3
+      - key: MARKET_REDIS_DIAL_TIMEOUT
+        value: 5s
+      - key: MARKET_REDIS_READ_TIMEOUT
+        value: 3s
+
+      # Logging Config
+      - key: MARKET_LOGGING_LEVEL
+        value: info
+      - key: MARKET_LOGGING_FORMAT
+        value: json
+      - key: MARKET_LOGGING_TIME_FORMAT
+        value: unix
+
+      # Market Config
+      - key: MARKET_MARKET_VN30_TABLE_NAME
+        value: vn30_table
+      - key: MARKET_MARKET_HNX_TABLE_NAME
+        value: hnx_table
+      - key: MARKET_MARKET_CACHE_TTL
+        value: 24h
+      - key: MARKET_MARKET_STREAM_BUFFER_SIZE
+        value: 100
+      - key: MARKET_MARKET_MAX_CONCURRENT_CONNECTIONS
+        value: 1000
+
+# Optional: Uncomment to add Redis (adds extra cost but recommended for caching)
+# - type: redis
+#   name: market-redis
+#   plan: starter
+#   region: oregon
+#   ipAllowList: []
+#   maxmemoryPolicy: allkeys-lru
+#
+# Then update the Redis env vars above to use fromService:
+#   - key: MARKET_REDIS_ADDRESS
+#     fromService:
+#       type: redis
+#       name: market-redis
+#       property: connectionString
+#   - key: MARKET_REDIS_PASSWORD
+#     fromService:
+#       type: redis
+#       name: market-redis
+#       property: password

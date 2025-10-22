@@ -37,6 +37,10 @@ type Broadcaster struct {
 	// Redis cache for async writes (optional)
 	cache repository.CacheRepository
 
+	// Last known good values for forward-fill
+	lastKnownVN30  float64
+	lastKnownHNX   float64
+
 	log *logger.Logger
 }
 
@@ -181,36 +185,65 @@ func (b *Broadcaster) broadcast(msg MarketDataMessage) {
 
 // BroadcastChartData broadcasts chart data from query results
 func (b *Broadcaster) BroadcastChartData(chartData []repository.ChartData) {
-	if len(chartData) == 0 {
-		return
-	}
-
 	// Convert ChartData to MarketDataMessage
 	// For now, we map VN30 and 41I1FA000 to the existing message structure
 	msg := MarketDataMessage{
 		Timestamp: time.Now().Unix(),
 	}
 
+	// Track which values were updated
+	vn30Updated := false
+	hnxUpdated := false
+
 	// Map chart data to message fields
 	for _, chart := range chartData {
 		switch chart.Ticker {
 		case "VN30":
-			msg.VN30Value = chart.Value
+			if chart.Value > 0 {
+				msg.VN30Value = chart.Value
+				vn30Updated = true
+			}
 		case "41I1FA000":
-			msg.HNXValue = chart.Value // Temporarily use HNXValue for futures
+			if chart.Value > 0 {
+				msg.HNXValue = chart.Value
+				hnxUpdated = true
+			}
 		}
 	}
 
-	// Broadcast to connected clients (synchronous, in-memory)
-	b.broadcast(msg)
+	// Forward-fill: Use last known good values if no new data
+	b.mu.Lock()
+	if !vn30Updated && b.lastKnownVN30 > 0 {
+		msg.VN30Value = b.lastKnownVN30
+		b.log.Debug("forward-filling VN30 value with last known good value")
+	} else if vn30Updated {
+		b.lastKnownVN30 = msg.VN30Value
+	}
 
-	// Write to Redis asynchronously (non-blocking)
-	go b.asyncWriteToRedis(msg)
+	if !hnxUpdated && b.lastKnownHNX > 0 {
+		msg.HNXValue = b.lastKnownHNX
+		b.log.Debug("forward-filling futures value with last known good value")
+	} else if hnxUpdated {
+		b.lastKnownHNX = msg.HNXValue
+	}
+	b.mu.Unlock()
 
-	b.log.WithFields(map[string]interface{}{
-		"charts":  len(chartData),
-		"clients": len(b.clients),
-	}).Info("broadcasting chart data")
+	// Only broadcast if we have at least one valid value
+	if msg.VN30Value > 0 || msg.HNXValue > 0 {
+		// Broadcast to connected clients (synchronous, in-memory)
+		b.broadcast(msg)
+
+		// Write to Redis asynchronously (non-blocking)
+		go b.asyncWriteToRedis(msg)
+
+		b.log.WithFields(map[string]interface{}{
+			"vn30":    msg.VN30Value,
+			"futures": msg.HNXValue,
+			"clients": len(b.clients),
+		}).Info("broadcasting chart data")
+	} else {
+		b.log.Warn("no valid data to broadcast, skipping")
+	}
 }
 
 // GetActiveClientsCount returns the number of active clients

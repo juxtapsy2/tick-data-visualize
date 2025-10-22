@@ -238,6 +238,17 @@ func readIndexTickCSV(filePath string, log *logger.Logger) ([]IndexTickRow, erro
 
 		row.Category = record[colMap["category"]]
 
+		// Skip rows with invalid or zero price data to prevent anomalies
+		if row.Last <= 0 {
+			log.WithFields(map[string]interface{}{
+				"line":   lineNum,
+				"ticker": row.Ticker,
+				"last":   row.Last,
+			}).Debug("skipping row with invalid price")
+			lineNum++
+			continue
+		}
+
 		rows = append(rows, row)
 		lineNum++
 	}
@@ -309,6 +320,17 @@ func readFuturesCSV(filePath string, log *logger.Logger) ([]FuturesRow, error) {
 		}
 
 		row.Category = record[colMap["category"]]
+
+		// Skip rows with invalid or zero price data to prevent anomalies
+		if row.Last <= 0 {
+			log.WithFields(map[string]interface{}{
+				"line":   lineNum,
+				"ticker": row.Ticker,
+				"last":   row.Last,
+			}).Debug("skipping row with invalid price")
+			lineNum++
+			continue
+		}
 
 		rows = append(rows, row)
 		lineNum++

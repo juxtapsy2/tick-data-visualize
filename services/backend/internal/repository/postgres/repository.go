@@ -57,7 +57,7 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 				time_bucket('15 seconds', ts) AS bucket,
 				AVG(last) as value
 			FROM index_tick
-			WHERE ticker = 'VN30' AND ts >= $1 AND ts <= $2 AND last IS NOT NULL
+			WHERE ticker = 'VN30' AND ts >= $1 AND ts <= $2 AND last IS NOT NULL AND last > 0
 			GROUP BY bucket
 		),
 		futures_buckets AS (
@@ -65,13 +65,13 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 				time_bucket('15 seconds', ts) AS bucket,
 				AVG(last) as value
 			FROM futures_table
-			WHERE ticker = '41I1FA000' AND ts >= $1 AND ts <= $2 AND last IS NOT NULL
+			WHERE ticker = '41I1FA000' AND ts >= $1 AND ts <= $2 AND last IS NOT NULL AND last > 0
 			GROUP BY bucket
 		)
 		SELECT
 			EXTRACT(EPOCH FROM COALESCE(v.bucket, f.bucket))::bigint as timestamp,
-			COALESCE(v.value, 0) as vn30_value,
-			COALESCE(f.value, 0) as hnx_value
+			v.value as vn30_value,
+			f.value as hnx_value
 		FROM vn30_buckets v
 		FULL OUTER JOIN futures_buckets f ON v.bucket = f.bucket
 		ORDER BY timestamp;
@@ -188,6 +188,7 @@ func (r *Repository) GetLast15sAverages(ctx context.Context, indexTickers []stri
 			WHERE ticker = ANY($1)
 				AND ts > NOW() - INTERVAL '15 seconds'
 				AND last IS NOT NULL
+				AND last > 0
 			GROUP BY ticker;
 		`
 
@@ -222,6 +223,7 @@ func (r *Repository) GetLast15sAverages(ctx context.Context, indexTickers []stri
 			WHERE ticker = ANY($1)
 				AND ts > NOW() - INTERVAL '15 seconds'
 				AND last IS NOT NULL
+				AND last > 0
 			GROUP BY ticker;
 		`
 

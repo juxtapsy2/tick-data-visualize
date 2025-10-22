@@ -42,6 +42,63 @@ type FuturesRow struct {
 	Category       string
 }
 
+// findClosestTimeIndex finds the index of the row closest to the target time
+func findClosestTimeIndex[T interface{ GetFormattedTime() string }](rows []T, targetTime string, log *logger.Logger) int {
+	if len(rows) == 0 {
+		return 0
+	}
+
+	// Parse target time
+	target, err := time.Parse("2006-01-02 15:04:05", targetTime)
+	if err != nil {
+		log.WithError(err).Warn("failed to parse target time, starting from beginning")
+		return 0
+	}
+
+	// Extract just the time part (HH:MM:SS) for comparison
+	targetHour := target.Hour()
+	targetMinute := target.Minute()
+	targetSecond := target.Second()
+
+	// Binary search or linear search for the closest time
+	// Since data is sequential by time, we can do a linear search
+	for i, row := range rows {
+		rowTime, err := time.Parse("2006-01-02 15:04:05", row.GetFormattedTime())
+		if err != nil {
+			continue
+		}
+
+		// Compare only the time component (ignore date)
+		rowHour := rowTime.Hour()
+		rowMinute := rowTime.Minute()
+		rowSecond := rowTime.Second()
+
+		// If row time is >= target time, use this as starting point
+		if rowHour > targetHour ||
+		   (rowHour == targetHour && rowMinute > targetMinute) ||
+		   (rowHour == targetHour && rowMinute == targetMinute && rowSecond >= targetSecond) {
+			log.WithFields(map[string]interface{}{
+				"index": i,
+				"time":  row.GetFormattedTime(),
+			}).Info("found starting position")
+			return i
+		}
+	}
+
+	// If target time is after all rows, start from beginning (loop data)
+	log.Info("target time is after all data, starting from beginning")
+	return 0
+}
+
+// GetFormattedTime methods for interface compliance
+func (r IndexTickRow) GetFormattedTime() string {
+	return r.FormattedTime
+}
+
+func (r FuturesRow) GetFormattedTime() string {
+	return r.FormattedTime
+}
+
 // isWithinTradingHours checks if a timestamp is within Vietnam trading hours
 // Morning session: 8:45-11:30, Afternoon session: 13:00-14:45
 func isWithinTradingHours(formattedTime string) bool {
@@ -143,15 +200,40 @@ func main() {
 	log.WithFields(map[string]interface{}{
 		"index_rows":   len(indexRows),
 		"futures_rows": len(futuresRows),
-	}).Info("loaded CSV data")
+	}).Info("loaded CSV data after filtering")
+
+	// Find starting index based on current time
+	now := time.Now()
+	vietnamLocation := time.FixedZone("ICT", 7*60*60)
+	currentVietnamTime := now.In(vietnamLocation)
+	targetTime := currentVietnamTime.Format("2006-01-02 15:04:05")
+
+	log.WithField("target_time", targetTime).Info("finding starting position for current time")
+
+	// Find the closest index in indexRows to current time
+	indexIdx := findClosestTimeIndex(indexRows, targetTime, log)
+	futuresIdx := findClosestTimeIndex(futuresRows, targetTime, log)
+
+	if indexIdx >= len(indexRows) {
+		indexIdx = 0
+		log.Warn("current time not found in index data, starting from beginning")
+	}
+	if futuresIdx >= len(futuresRows) {
+		futuresIdx = 0
+		log.Warn("current time not found in futures data, starting from beginning")
+	}
+
+	log.WithFields(map[string]interface{}{
+		"index_start":   indexIdx,
+		"futures_start": futuresIdx,
+		"index_time":    indexRows[indexIdx].FormattedTime,
+		"futures_time":  futuresRows[futuresIdx].FormattedTime,
+	}).Info("starting data insertion from current time position")
 
 	// Start inserting data with delay to simulate real-time
 	insertInterval := 1 * time.Second
 	ticker := time.NewTicker(insertInterval)
 	defer ticker.Stop()
-
-	indexIdx := 0
-	futuresIdx := 0
 
 	log.WithField("interval", insertInterval).Info("starting data insertion")
 

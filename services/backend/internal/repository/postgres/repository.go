@@ -69,11 +69,11 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 			GROUP BY bucket
 		)
 		SELECT
-			EXTRACT(EPOCH FROM COALESCE(v.bucket, f.bucket))::bigint as timestamp,
+			EXTRACT(EPOCH FROM v.bucket)::bigint as timestamp,
 			v.value as vn30_value,
 			f.value as hnx_value
 		FROM vn30_buckets v
-		FULL OUTER JOIN futures_buckets f ON v.bucket = f.bucket
+		INNER JOIN futures_buckets f ON v.bucket = f.bucket
 		ORDER BY timestamp;
 	`
 

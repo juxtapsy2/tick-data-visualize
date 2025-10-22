@@ -42,6 +42,40 @@ type FuturesRow struct {
 	Category       string
 }
 
+// isWithinTradingHours checks if a timestamp is within Vietnam trading hours
+// Morning session: 8:45-11:30, Afternoon session: 13:00-14:45
+func isWithinTradingHours(formattedTime string) bool {
+	// Parse the formatted time (format: "2006-01-02 15:04:05")
+	t, err := time.Parse("2006-01-02 15:04:05", formattedTime)
+	if err != nil {
+		return false
+	}
+
+	hour := t.Hour()
+	minute := t.Minute()
+
+	// Morning session: 8:45 to 11:30
+	if hour == 8 && minute >= 45 {
+		return true
+	}
+	if hour >= 9 && hour < 11 {
+		return true
+	}
+	if hour == 11 && minute <= 30 {
+		return true
+	}
+
+	// Afternoon session: 13:00 to 14:45
+	if hour == 13 {
+		return true
+	}
+	if hour == 14 && minute <= 45 {
+		return true
+	}
+
+	return false
+}
+
 func main() {
 	// Load config
 	cfg, err := config.Load("")
@@ -249,6 +283,12 @@ func readIndexTickCSV(filePath string, log *logger.Logger) ([]IndexTickRow, erro
 			continue
 		}
 
+		// Filter to trading hours only: 8:45-11:30 and 13:00-14:45
+		if !isWithinTradingHours(row.FormattedTime) {
+			lineNum++
+			continue
+		}
+
 		rows = append(rows, row)
 		lineNum++
 	}
@@ -328,6 +368,12 @@ func readFuturesCSV(filePath string, log *logger.Logger) ([]FuturesRow, error) {
 				"ticker": row.Ticker,
 				"last":   row.Last,
 			}).Debug("skipping row with invalid price")
+			lineNum++
+			continue
+		}
+
+		// Filter to trading hours only: 8:45-11:30 and 13:00-14:45
+		if !isWithinTradingHours(row.FormattedTime) {
 			lineNum++
 			continue
 		}

@@ -9,10 +9,10 @@ WORKDIR /build
 COPY shared/ ./shared/
 
 # Copy service code
-COPY services/backend/ /build/services/backend/
+COPY services/market-service/ /build/services/market-service/
 
 # Work in service directory
-WORKDIR /build/services/backend
+WORKDIR /build/services/market-service
 
 # Download dependencies and generate go.sum
 RUN go mod tidy && go mod download

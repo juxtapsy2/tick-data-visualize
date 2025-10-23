@@ -19,12 +19,7 @@ function App() {
   useEffect(() => {
     // Initialize service and load data
     const initializeData = async () => {
-      // For production: use same domain (Nginx proxies to backend)
-      // For development: use localhost
-      const wsHost = import.meta.env.VITE_WS_HOST ||
-        (window.location.hostname === 'localhost'
-          ? 'http://localhost:8080'
-          : `${window.location.protocol}//${window.location.host}`);
+      const wsHost = import.meta.env.VITE_WS_HOST || 'http://localhost:8070';
       console.log('Initializing MarketStreamService with host:', wsHost);
       serviceRef.current = new MarketStreamService(wsHost);
 

@@ -231,7 +231,7 @@ func registerLifecycleHooks(lc fx.Lifecycle, log *logger.Logger, broadcaster *se
 
 				// Define tickers to query
 				indexTickers := []string{"VN30"}
-				futuresTickers := []string{"41I1FA000"}
+				futuresTickers := []string{"f1"}
 
 				for {
 					select {

@@ -17,120 +17,30 @@ import (
 )
 
 type IndexTickRow struct {
-	Timestamp      int64
-	FormattedTime  string
-	Session        string
-	Ticker         string
-	Last           float64
-	Change         float64
-	PctChange      float64
-	MatchedVol     float64
-	MatchedVal     float64
-	Category       string
+	Timestamp     int64
+	FormattedTime string
+	Session       string
+	Ticker        string
+	Last          *float64
+	Change        *float64
+	PctChange     *float64
+	MatchedVol    *float64
+	MatchedVal    *float64
+	Category      string
 }
 
 type FuturesRow struct {
-	FormattedTime  string
-	Session        string
-	Ticker         string
-	Last           float64
-	Change         float64
-	PctChange      float64
-	TotalVol       float64
-	TotalVal       float64
-	Timestamp      int64
-	Category       string
-}
-
-// findClosestTimeIndex finds the index of the row closest to the target time
-func findClosestTimeIndex[T interface{ GetFormattedTime() string }](rows []T, targetTime string, log *logger.Logger) int {
-	if len(rows) == 0 {
-		return 0
-	}
-
-	// Parse target time
-	target, err := time.Parse("2006-01-02 15:04:05", targetTime)
-	if err != nil {
-		log.WithError(err).Warn("failed to parse target time, starting from beginning")
-		return 0
-	}
-
-	// Extract just the time part (HH:MM:SS) for comparison
-	targetHour := target.Hour()
-	targetMinute := target.Minute()
-	targetSecond := target.Second()
-
-	// Binary search or linear search for the closest time
-	// Since data is sequential by time, we can do a linear search
-	for i, row := range rows {
-		rowTime, err := time.Parse("2006-01-02 15:04:05", row.GetFormattedTime())
-		if err != nil {
-			continue
-		}
-
-		// Compare only the time component (ignore date)
-		rowHour := rowTime.Hour()
-		rowMinute := rowTime.Minute()
-		rowSecond := rowTime.Second()
-
-		// If row time is >= target time, use this as starting point
-		if rowHour > targetHour ||
-		   (rowHour == targetHour && rowMinute > targetMinute) ||
-		   (rowHour == targetHour && rowMinute == targetMinute && rowSecond >= targetSecond) {
-			log.WithFields(map[string]interface{}{
-				"index": i,
-				"time":  row.GetFormattedTime(),
-			}).Info("found starting position")
-			return i
-		}
-	}
-
-	// If target time is after all rows, start from beginning (loop data)
-	log.Info("target time is after all data, starting from beginning")
-	return 0
-}
-
-// GetFormattedTime methods for interface compliance
-func (r IndexTickRow) GetFormattedTime() string {
-	return r.FormattedTime
-}
-
-func (r FuturesRow) GetFormattedTime() string {
-	return r.FormattedTime
-}
-
-// isWithinTradingHours checks if a timestamp is within Vietnam trading hours
-// Morning session: 8:45-11:30, Afternoon session: 13:00-14:45
-func isWithinTradingHours(formattedTime string) bool {
-	// Parse the formatted time (format: "2006-01-02 15:04:05")
-	t, err := time.Parse("2006-01-02 15:04:05", formattedTime)
-	if err != nil {
-		return false
-	}
-
-	hour := t.Hour()
-	minute := t.Minute()
-
-	// Morning session: 8:45 to 11:30
-	if hour == 8 && minute >= 45 {
-		return true
-	}
-	if hour >= 9 && hour < 11 {
-		return true
-	}
-	if hour == 11 && minute <= 30 {
-		return true
-	}
-
-	// Afternoon session: 13:00 to 14:45
-	if hour == 13 {
-		return true
-	}
-	if hour == 14 && minute <= 45 {
-		return true
-	}
-
-	return false
+	FormattedTime string
+	Session       string
+	Ticker        string
+	F             string
+	Last          *float64
+	Change        *float64
+	PctChange     *float64
+	TotalVol      *float64
+	TotalVal      *float64
+	Timestamp     int64
+	Category      string
 }
 
 func main() {
@@ -200,35 +110,48 @@ func main() {
 	log.WithFields(map[string]interface{}{
 		"index_rows":   len(indexRows),
 		"futures_rows": len(futuresRows),
-	}).Info("loaded CSV data after filtering")
+	}).Info("loaded CSV data")
 
-	// Find starting index based on current time
-	now := time.Now()
-	vietnamLocation := time.FixedZone("ICT", 7*60*60)
-	currentVietnamTime := now.In(vietnamLocation)
-	targetTime := currentVietnamTime.Format("2006-01-02 15:04:05")
+	// Filter CSV data based on current minute:second
+	// Match MM:SS only, so if now is 17:27:35, find CSV row at XX:27:35
+	currentTime := time.Now()
+	currentMinSec := currentTime.Minute()*60 + currentTime.Second()
 
-	log.WithField("target_time", targetTime).Info("finding starting position for current time")
-
-	// Find the closest index in indexRows to current time
-	indexIdx := findClosestTimeIndex(indexRows, targetTime, log)
-	futuresIdx := findClosestTimeIndex(futuresRows, targetTime, log)
-
-	if indexIdx >= len(indexRows) {
-		indexIdx = 0
-		log.Warn("current time not found in index data, starting from beginning")
-	}
-	if futuresIdx >= len(futuresRows) {
-		futuresIdx = 0
-		log.Warn("current time not found in futures data, starting from beginning")
+	// Find first index row matching current minute:second
+	indexIdx := 0
+	for i, row := range indexRows {
+		csvTime := time.UnixMilli(row.Timestamp)
+		csvMinSec := csvTime.Minute()*60 + csvTime.Second()
+		if csvMinSec >= currentMinSec {
+			indexIdx = i
+			break
+		}
 	}
 
-	log.WithFields(map[string]interface{}{
-		"index_start":   indexIdx,
-		"futures_start": futuresIdx,
-		"index_time":    indexRows[indexIdx].FormattedTime,
-		"futures_time":  futuresRows[futuresIdx].FormattedTime,
-	}).Info("starting data insertion from current time position")
+	// Find first futures row matching current minute:second
+	futuresIdx := 0
+	for i, row := range futuresRows {
+		csvTime := time.UnixMilli(row.Timestamp)
+		csvMinSec := csvTime.Minute()*60 + csvTime.Second()
+		if csvMinSec >= currentMinSec {
+			futuresIdx = i
+			break
+		}
+	}
+
+	// Calculate time offset from the first matching row
+	var timeOffset time.Duration
+	if indexIdx < len(indexRows) {
+		csvFirstTime := time.UnixMilli(indexRows[indexIdx].Timestamp)
+		timeOffset = currentTime.Sub(csvFirstTime)
+		log.WithFields(map[string]interface{}{
+			"current_time":    currentTime.Format("15:04:05"),
+			"csv_start_time":  csvFirstTime.Format("15:04:05"),
+			"offset":          timeOffset,
+			"skipped_index":   indexIdx,
+			"skipped_futures": futuresIdx,
+		}).Info("filtered CSV data to match current minute:second")
+	}
 
 	// Start inserting data with delay to simulate real-time
 	insertInterval := 1 * time.Second
@@ -237,6 +160,11 @@ func main() {
 
 	log.WithField("interval", insertInterval).Info("starting data insertion")
 
+	// Session tracking: morning (9:00 AM) and evening (7:00 PM)
+	vietnamLocation := time.FixedZone("ICT", 7*60*60) // Vietnam is UTC+7
+	var currentSession string                         // "morning", "evening", or ""
+	var sessionStarted bool
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -244,46 +172,114 @@ func main() {
 			return
 
 		case <-ticker.C:
-			// Insert index tick data
-			if indexIdx < len(indexRows) {
-				row := indexRows[indexIdx]
-				if err := insertIndexTick(ctx, pool, row, log); err != nil {
-					log.WithError(err).Error("failed to insert index tick")
-				} else {
-					log.WithFields(map[string]interface{}{
-						"ticker": row.Ticker,
-						"value":  fmt.Sprintf("%.2f", row.Last),
-						"index":  indexIdx,
-						"total":  len(indexRows),
-					}).Debug("inserted index tick")
-				}
-				indexIdx++
-			}
+			now := time.Now().In(vietnamLocation)
+			currentHour := now.Hour()
 
-			// Insert futures data
-			if futuresIdx < len(futuresRows) {
-				row := futuresRows[futuresIdx]
-				if err := insertFutures(ctx, pool, row, log); err != nil {
-					log.WithError(err).Error("failed to insert futures")
-				} else {
-					log.WithFields(map[string]interface{}{
-						"ticker": row.Ticker,
-						"value":  fmt.Sprintf("%.2f", row.Last),
-						"index":  futuresIdx,
-						"total":  len(futuresRows),
-					}).Debug("inserted futures")
-				}
-				futuresIdx++
-			}
-
-			// Loop back to start when we reach the end
-			if indexIdx >= len(indexRows) {
+			// Determine if we should start a new session
+			if currentHour >= 9 && currentHour < 18 && currentSession != "morning" {
+				// Start morning session (9:00 AM - before 6:00 PM)
+				currentSession = "morning"
 				indexIdx = 0
-				log.Info("restarting index tick data from beginning")
-			}
-			if futuresIdx >= len(futuresRows) {
 				futuresIdx = 0
-				log.Info("restarting futures data from beginning")
+				sessionStarted = true
+				log.Info("starting morning session (9:00 AM - 5:59 PM)")
+			} else if currentHour >= 19 && currentSession != "evening" {
+				// Start evening session (7:00 PM onwards)
+				currentSession = "evening"
+				indexIdx = 0
+				futuresIdx = 0
+				sessionStarted = true
+				log.Info("starting evening session (7:00 PM)")
+			} else if currentHour < 9 || (currentHour >= 18 && currentHour < 19) {
+				// Before 9:00 AM or between 6:00 PM - 6:59 PM - reset session
+				currentSession = ""
+				sessionStarted = false
+			}
+
+			// Skip if no active session or CSV data exhausted
+			if !sessionStarted {
+				continue
+			}
+
+			// Check if both CSV datasets are exhausted
+			if indexIdx >= len(indexRows) && futuresIdx >= len(futuresRows) {
+				log.WithField("session", currentSession).Info("CSV data exhausted, waiting for next session")
+				sessionStarted = false
+				continue
+			}
+
+			// Insert all index tick rows with the same timestamp
+			if indexIdx < len(indexRows) {
+				currentTimestamp := indexRows[indexIdx].Timestamp
+				insertedCount := 0
+
+				// Find all rows with the same timestamp and insert them
+				for indexIdx < len(indexRows) && indexRows[indexIdx].Timestamp == currentTimestamp {
+					row := indexRows[indexIdx]
+					if err := insertIndexTick(ctx, pool, row, timeOffset, log); err != nil {
+						log.WithError(err).Error("failed to insert index tick")
+					} else {
+						var valueStr string
+						if row.Last != nil {
+							valueStr = fmt.Sprintf("%.2f", *row.Last)
+						} else {
+							valueStr = "NULL"
+						}
+						log.WithFields(map[string]interface{}{
+							"ticker":    row.Ticker,
+							"value":     valueStr,
+							"index":     indexIdx,
+							"total":     len(indexRows),
+							"timestamp": currentTimestamp,
+						}).Debug("inserted index tick")
+					}
+					indexIdx++
+					insertedCount++
+				}
+
+				if insertedCount > 1 {
+					log.WithFields(map[string]interface{}{
+						"count":     insertedCount,
+						"timestamp": currentTimestamp,
+					}).Info("inserted multiple index rows with same timestamp")
+				}
+			}
+
+			// Insert all futures rows with the same timestamp
+			if futuresIdx < len(futuresRows) {
+				currentTimestamp := futuresRows[futuresIdx].Timestamp
+				insertedCount := 0
+
+				// Find all rows with the same timestamp and insert them
+				for futuresIdx < len(futuresRows) && futuresRows[futuresIdx].Timestamp == currentTimestamp {
+					row := futuresRows[futuresIdx]
+					if err := insertFutures(ctx, pool, row, timeOffset, log); err != nil {
+						log.WithError(err).Error("failed to insert futures")
+					} else {
+						var valueStr string
+						if row.Last != nil {
+							valueStr = fmt.Sprintf("%.2f", *row.Last)
+						} else {
+							valueStr = "NULL"
+						}
+						log.WithFields(map[string]interface{}{
+							"ticker":    row.Ticker,
+							"value":     valueStr,
+							"index":     futuresIdx,
+							"total":     len(futuresRows),
+							"timestamp": currentTimestamp,
+						}).Debug("inserted futures")
+					}
+					futuresIdx++
+					insertedCount++
+				}
+
+				if insertedCount > 1 {
+					log.WithFields(map[string]interface{}{
+						"count":     insertedCount,
+						"timestamp": currentTimestamp,
+					}).Info("inserted multiple futures rows with same timestamp")
+				}
 			}
 		}
 	}
@@ -335,41 +331,24 @@ func readIndexTickCSV(filePath string, log *logger.Logger) ([]IndexTickRow, erro
 		row.Session = record[colMap["session"]]
 		row.Ticker = record[colMap["ticker"]]
 
-		// Parse numeric fields
+		// Parse numeric fields - use pointers to properly handle NULL values
 		if val, err := strconv.ParseFloat(record[colMap["last"]], 64); err == nil {
-			row.Last = val
+			row.Last = &val
 		}
 		if val, err := strconv.ParseFloat(record[colMap["change"]], 64); err == nil {
-			row.Change = val
+			row.Change = &val
 		}
 		if val, err := strconv.ParseFloat(record[colMap["pct_change"]], 64); err == nil {
-			row.PctChange = val
+			row.PctChange = &val
 		}
 		if val, err := strconv.ParseFloat(record[colMap["matched_vol"]], 64); err == nil {
-			row.MatchedVol = val
+			row.MatchedVol = &val
 		}
 		if val, err := strconv.ParseFloat(record[colMap["matched_val"]], 64); err == nil {
-			row.MatchedVal = val
+			row.MatchedVal = &val
 		}
 
 		row.Category = record[colMap["category"]]
-
-		// Skip rows with invalid or zero price data to prevent anomalies
-		if row.Last <= 0 {
-			log.WithFields(map[string]interface{}{
-				"line":   lineNum,
-				"ticker": row.Ticker,
-				"last":   row.Last,
-			}).Debug("skipping row with invalid price")
-			lineNum++
-			continue
-		}
-
-		// Filter to trading hours only: 8:45-11:30 and 13:00-14:45
-		if !isWithinTradingHours(row.FormattedTime) {
-			lineNum++
-			continue
-		}
 
 		rows = append(rows, row)
 		lineNum++
@@ -418,47 +397,31 @@ func readFuturesCSV(filePath string, log *logger.Logger) ([]FuturesRow, error) {
 		row.FormattedTime = record[colMap["formatted_time"]]
 		row.Session = record[colMap["session"]]
 		row.Ticker = record[colMap["ticker"]]
+		row.F = record[colMap["f"]]
 
 		// Parse timestamp
 		if val, err := strconv.ParseInt(record[colMap["timestamp"]], 10, 64); err == nil {
 			row.Timestamp = val
 		}
 
-		// Parse numeric fields
+		// Parse numeric fields - use pointers to properly handle NULL values
 		if val, err := strconv.ParseFloat(record[colMap["last"]], 64); err == nil {
-			row.Last = val
+			row.Last = &val
 		}
 		if val, err := strconv.ParseFloat(record[colMap["change"]], 64); err == nil {
-			row.Change = val
+			row.Change = &val
 		}
 		if val, err := strconv.ParseFloat(record[colMap["pct_change"]], 64); err == nil {
-			row.PctChange = val
+			row.PctChange = &val
 		}
 		if val, err := strconv.ParseFloat(record[colMap["total_vol"]], 64); err == nil {
-			row.TotalVol = val
+			row.TotalVol = &val
 		}
 		if val, err := strconv.ParseFloat(record[colMap["total_val"]], 64); err == nil {
-			row.TotalVal = val
+			row.TotalVal = &val
 		}
 
 		row.Category = record[colMap["category"]]
-
-		// Skip rows with invalid or zero price data to prevent anomalies
-		if row.Last <= 0 {
-			log.WithFields(map[string]interface{}{
-				"line":   lineNum,
-				"ticker": row.Ticker,
-				"last":   row.Last,
-			}).Debug("skipping row with invalid price")
-			lineNum++
-			continue
-		}
-
-		// Filter to trading hours only: 8:45-11:30 and 13:00-14:45
-		if !isWithinTradingHours(row.FormattedTime) {
-			lineNum++
-			continue
-		}
 
 		rows = append(rows, row)
 		lineNum++
@@ -467,10 +430,9 @@ func readFuturesCSV(filePath string, log *logger.Logger) ([]FuturesRow, error) {
 	return rows, nil
 }
 
-func insertIndexTick(ctx context.Context, pool *pgxpool.Pool, row IndexTickRow, log *logger.Logger) error {
-	// Use current time instead of CSV timestamp for real-time simulation
-	now := time.Now()
-	currentTimestamp := now.UnixMilli()
+func insertIndexTick(ctx context.Context, pool *pgxpool.Pool, row IndexTickRow, timeOffset time.Duration, log *logger.Logger) error {
+	// Use current time for real-time data insertion
+	newTimestamp := time.Now()
 
 	query := `
 		INSERT INTO index_tick (
@@ -478,13 +440,14 @@ func insertIndexTick(ctx context.Context, pool *pgxpool.Pool, row IndexTickRow, 
 			last, change, pct_change, matched_vol, matched_val, category
 		)
 		VALUES (
-			NOW(), $1, $2, $3, $4,
-			$5, $6, $7, $8, $9, $10
+			$1, $2, $3, $4, $5,
+			$6, $7, $8, $9, $10, $11
 		)
 	`
 
 	_, err := pool.Exec(ctx, query,
-		currentTimestamp,
+		newTimestamp,
+		newTimestamp.UnixMilli(),
 		row.FormattedTime,
 		row.Session,
 		row.Ticker,
@@ -499,27 +462,28 @@ func insertIndexTick(ctx context.Context, pool *pgxpool.Pool, row IndexTickRow, 
 	return err
 }
 
-func insertFutures(ctx context.Context, pool *pgxpool.Pool, row FuturesRow, log *logger.Logger) error {
-	// Use current time instead of CSV timestamp for real-time simulation
-	now := time.Now()
-	currentTimestamp := now.UnixMilli()
+func insertFutures(ctx context.Context, pool *pgxpool.Pool, row FuturesRow, timeOffset time.Duration, log *logger.Logger) error {
+	// Use current time for real-time data insertion
+	newTimestamp := time.Now()
 
 	query := `
 		INSERT INTO futures_table (
-			ts, timestamp, formatted_time, session, ticker,
+			ts, timestamp, formatted_time, session, ticker, f,
 			last, change, pct_change, total_vol, total_val, category
 		)
 		VALUES (
-			NOW(), $1, $2, $3, $4,
-			$5, $6, $7, $8, $9, $10
+			$1, $2, $3, $4, $5, $6,
+			$7, $8, $9, $10, $11, $12
 		)
 	`
 
 	_, err := pool.Exec(ctx, query,
-		currentTimestamp,
+		newTimestamp,
+		newTimestamp.UnixMilli(),
 		row.FormattedTime,
 		row.Session,
 		row.Ticker,
+		row.F,
 		row.Last,
 		row.Change,
 		row.PctChange,

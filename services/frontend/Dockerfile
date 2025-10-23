@@ -4,14 +4,14 @@ FROM node:20-alpine AS builder
 WORKDIR /build
 
 # Copy frontend package files
-COPY services/frontend/package*.json ./services/frontend/
+COPY services/market-frontend/package*.json ./services/market-frontend/
 
 # Install dependencies
-WORKDIR /build/services/frontend
+WORKDIR /build/services/market-frontend
 RUN npm ci
 
 # Copy frontend source (including pre-generated proto files)
-COPY services/frontend ./
+COPY services/market-frontend ./
 
 # Build the application
 RUN npm run build
@@ -20,10 +20,10 @@ RUN npm run build
 FROM nginx:alpine
 
 # Copy built files from builder
-COPY --from=builder /build/services/frontend/dist /usr/share/nginx/html
+COPY --from=builder /build/services/market-frontend/dist /usr/share/nginx/html
 
 # Copy nginx configuration
-COPY services/frontend/nginx.conf /etc/nginx/conf.d/default.conf
+COPY services/market-frontend/nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
 

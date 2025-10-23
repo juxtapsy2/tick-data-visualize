@@ -46,37 +46,6 @@ export const MarketChart = ({ data }: MarketChartProps) => {
     const vn30Values = displayData.map(d => d.vn30Value.toFixed(2));
     const hnxValues = displayData.map(d => d.hnxValue.toFixed(2));
 
-    // Calculate dynamic y-axis ranges with padding (5x zoom = tighter range)
-    const calculateAxisRange = (values: number[]) => {
-      if (values.length === 0 || values.every(v => v === 0)) {
-        return { min: 0, max: 100 }; // Default range
-      }
-
-      const validValues = values.filter(v => v > 0);
-      if (validValues.length === 0) {
-        return { min: 0, max: 100 }; // Default range
-      }
-
-      const min = Math.min(...validValues);
-      const max = Math.max(...validValues);
-      const range = max - min;
-
-      // Aggressive zoom: 15% padding for better visibility of small variations
-      // This creates a 5x tighter view compared to default auto-scaling
-      const padding = Math.max(range * 0.15, 2);
-
-      return {
-        min: Math.floor(min - padding),
-        max: Math.ceil(max + padding),
-      };
-    };
-
-    const vn30NumericValues = displayData.map(d => d.vn30Value);
-    const hnxNumericValues = displayData.map(d => d.hnxValue);
-
-    const vn30Range = calculateAxisRange(vn30NumericValues);
-    const hnxRange = calculateAxisRange(hnxNumericValues);
-
     const option: echarts.EChartsOption = {
       title: {
         text: 'Market Data Stream',
@@ -94,7 +63,7 @@ export const MarketChart = ({ data }: MarketChartProps) => {
         },
       },
       legend: {
-        data: ['VN30 Index', '41I1FA000'],
+        data: ['VN30 Index', 'F1'],
         top: 40,
       },
       grid: {
@@ -119,18 +88,14 @@ export const MarketChart = ({ data }: MarketChartProps) => {
           type: 'value',
           name: 'VN30',
           position: 'left',
-          min: vn30Range.min,
-          max: vn30Range.max,
           axisLabel: {
             formatter: '{value}',
           },
         },
         {
           type: 'value',
-          name: '41I1FA000',
+          name: 'F1',
           position: 'right',
-          min: hnxRange.min,
-          max: hnxRange.max,
           axisLabel: {
             formatter: '{value}',
           },
@@ -154,7 +119,7 @@ export const MarketChart = ({ data }: MarketChartProps) => {
           yAxisIndex: 0,
         },
         {
-          name: '41I1FA000',
+          name: 'F1',
           type: 'line',
           data: hnxValues,
           smooth: true,

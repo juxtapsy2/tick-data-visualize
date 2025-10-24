@@ -113,9 +113,10 @@ func (c *Cache) AppendDataPoint(ctx context.Context, date string, point reposito
 	// Append new point
 	existing = append(existing, point)
 
-	// Calculate TTL until end of day
-	now := time.Now()
-	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, now.Location())
+	// Calculate TTL until end of day in Vietnam timezone (UTC+7)
+	vietnamLocation := time.FixedZone("ICT", 7*60*60)
+	now := time.Now().In(vietnamLocation)
+	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, vietnamLocation)
 	ttl := time.Until(endOfDay) + time.Hour
 
 	if ttl < time.Hour {

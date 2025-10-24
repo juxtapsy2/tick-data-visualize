@@ -28,15 +28,16 @@ function App() {
 
       // Load historical data first
       try {
-        // Get current date/time in Vietnam timezone (UTC+7)
+        // Get current date in Vietnam timezone (UTC+7)
+        // We calculate Vietnam time by adding 7 hours to UTC
         const now = new Date();
-        const vietnamOffset = 7 * 60; // Vietnam is UTC+7
-        const vietnamTime = new Date(now.getTime() + (vietnamOffset + now.getTimezoneOffset()) * 60 * 1000);
+        const vietnamTimeMs = now.getTime() + (7 * 60 * 60 * 1000);
+        const vietnamTime = new Date(vietnamTimeMs);
 
-        // Get today's date in Vietnam
-        const year = vietnamTime.getFullYear();
-        const month = String(vietnamTime.getMonth() + 1).padStart(2, '0');
-        const day = String(vietnamTime.getDate()).padStart(2, '0');
+        // Get today's date in Vietnam (use UTC methods to avoid local timezone)
+        const year = vietnamTime.getUTCFullYear();
+        const month = String(vietnamTime.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(vietnamTime.getUTCDate()).padStart(2, '0');
         const todayVietnam = `${year}-${month}-${day}`;
 
         // Create start time: 9:00 AM Vietnam time

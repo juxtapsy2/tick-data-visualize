@@ -146,25 +146,37 @@ func main() {
 	currentMinute := now.Minute()
 	currentSecond := now.Second()
 
-	// Determine if we're in trading hours and should bulk insert historical data
+	// Determine if we should bulk insert historical data
+	// Backfill data for today if:
+	// 1. Currently in trading hours (9:00 AM - 2:45 PM), OR
+	// 2. After trading hours but still same day (before midnight)
 	indexIdx := 0
 	futuresIdx := 0
+
+	shouldBackfill := false
+	var backfillEndTime int // Time in seconds to backfill up to
 
 	if currentHour >= 9 && (currentHour < 14 || (currentHour == 14 && currentMinute <= 45)) {
 		// We're in morning session (9:00 AM - 2:45 PM)
 		// Bulk insert all data from 9:00 AM to current time
+		shouldBackfill = true
+		backfillEndTime = currentHour*3600 + currentMinute*60 + currentSecond
 		log.Info("in trading hours - bulk inserting historical data from 9:00 AM to current time")
+	} else if currentHour >= 15 && currentHour < 24 {
+		// After trading hours but same day - backfill entire trading session
+		shouldBackfill = true
+		backfillEndTime = 14*3600 + 45*60 // 2:45 PM
+		log.Info("after trading hours - bulk inserting full trading day data (9:00 AM - 2:45 PM)")
+	}
 
-		// Calculate current time in HH:MM:SS format
-		currentTimeInSeconds := currentHour*3600 + currentMinute*60 + currentSecond
-
-		// Bulk insert index_tick data up to current time
+	if shouldBackfill {
+		// Bulk insert index_tick data up to backfill end time
 		bulkInsertCount := 0
 		for i, row := range indexRows {
 			csvTime := time.UnixMilli(row.Timestamp).In(vietnamLocation)
 			csvTimeInSeconds := csvTime.Hour()*3600 + csvTime.Minute()*60 + csvTime.Second()
 
-			if csvTimeInSeconds <= currentTimeInSeconds {
+			if csvTimeInSeconds <= backfillEndTime {
 				if err := insertIndexTick(ctx, pool, row, dateOffset, log); err != nil {
 					log.WithError(err).Error("failed to bulk insert index tick")
 				} else {
@@ -177,13 +189,13 @@ func main() {
 		}
 		log.WithField("count", bulkInsertCount).Info("bulk inserted index_tick historical data")
 
-		// Bulk insert futures data up to current time
+		// Bulk insert futures data up to backfill end time
 		bulkInsertCount = 0
 		for i, row := range futuresRows {
 			csvTime := time.UnixMilli(row.Timestamp).In(vietnamLocation)
 			csvTimeInSeconds := csvTime.Hour()*3600 + csvTime.Minute()*60 + csvTime.Second()
 
-			if csvTimeInSeconds <= currentTimeInSeconds {
+			if csvTimeInSeconds <= backfillEndTime {
 				if err := insertFutures(ctx, pool, row, dateOffset, log); err != nil {
 					log.WithError(err).Error("failed to bulk insert futures")
 				} else {

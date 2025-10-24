@@ -115,6 +115,26 @@ services:
       - key: MARKET_DATABASE_CONN_MAX_LIFETIME
         value: 5m
 
+      # Redis Config (Auto-populated from Render Redis)
+      - key: MARKET_REDIS_ADDRESS
+        fromService:
+          type: redis
+          name: market-redis
+          property: connectionString
+      - key: MARKET_REDIS_PASSWORD
+        fromService:
+          type: redis
+          name: market-redis
+          property: password
+      - key: MARKET_REDIS_DB
+        value: 0
+      - key: MARKET_REDIS_MAX_RETRIES
+        value: 3
+      - key: MARKET_REDIS_DIAL_TIMEOUT
+        value: 5s
+      - key: MARKET_REDIS_READ_TIMEOUT
+        value: 3s
+
       # Logging Config
       - key: MARKET_LOGGING_LEVEL
         value: info

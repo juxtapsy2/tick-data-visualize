@@ -673,11 +673,26 @@ func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *r
 
 	for rows.Next() {
 		var timestamp int64
-		var vn30Value, hnxValue float64
+		var vn30Value, hnxValue *float64
 
 		if err := rows.Scan(&timestamp, &vn30Value, &hnxValue); err != nil {
 			log.WithError(err).Warn("failed to scan row")
 			continue
+		}
+
+		// Skip if both values are NULL
+		if vn30Value == nil && hnxValue == nil {
+			continue
+		}
+
+		// Use 0 for NULL values
+		vn30 := float64(0)
+		hnx := float64(0)
+		if vn30Value != nil {
+			vn30 = *vn30Value
+		}
+		if hnxValue != nil {
+			hnx = *hnxValue
 		}
 
 		// Write to Redis stream
@@ -687,8 +702,8 @@ func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *r
 			Approx: true,
 			Values: map[string]interface{}{
 				"timestamp": timestamp,
-				"vn30":      vn30Value,
-				"hnx":       hnxValue,
+				"vn30":      vn30,
+				"hnx":       hnx,
 			},
 		}).Err()
 

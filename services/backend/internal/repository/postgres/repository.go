@@ -297,11 +297,16 @@ func (r *Repository) GetLast15sAverages(ctx context.Context, indexTickers []stri
 
 		for rows.Next() {
 			var data repository.ChartData
-			if err := rows.Scan(&data.Ticker, &data.Value); err != nil {
+			var value *float64
+			if err := rows.Scan(&data.Ticker, &value); err != nil {
 				r.log.WithError(err).Error("failed to scan index row")
 				return nil, fmt.Errorf("scan error: %w", err)
 			}
-			results = append(results, data)
+			// Skip if no value available (NULL)
+			if value != nil {
+				data.Value = *value
+				results = append(results, data)
+			}
 		}
 
 		if err := rows.Err(); err != nil {
@@ -351,11 +356,16 @@ func (r *Repository) GetLast15sAverages(ctx context.Context, indexTickers []stri
 
 		for rows.Next() {
 			var data repository.ChartData
-			if err := rows.Scan(&data.Ticker, &data.Value); err != nil {
+			var value *float64
+			if err := rows.Scan(&data.Ticker, &value); err != nil {
 				r.log.WithError(err).Error("failed to scan futures row")
 				return nil, fmt.Errorf("scan error: %w", err)
 			}
-			results = append(results, data)
+			// Skip if no value available (NULL)
+			if value != nil {
+				data.Value = *value
+				results = append(results, data)
+			}
 		}
 
 		if err := rows.Err(); err != nil {

@@ -67,6 +67,11 @@ func main() {
 	log.Info("connected to database")
 
 	// Connect to Redis
+	log.WithFields(map[string]interface{}{
+		"address": cfg.Redis.Address,
+		"db":      cfg.Redis.DB,
+	}).Info("attempting to connect to Redis")
+
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:     cfg.Redis.Address,
 		Password: cfg.Redis.Password,
@@ -76,9 +81,12 @@ func main() {
 
 	// Test Redis connection
 	if err := redisClient.Ping(ctx).Err(); err != nil {
-		log.WithError(err).Fatal("failed to connect to Redis")
+		log.WithError(err).WithFields(map[string]interface{}{
+			"address": cfg.Redis.Address,
+			"db":      cfg.Redis.DB,
+		}).Fatal("failed to connect to Redis")
 	}
-	log.Info("connected to Redis")
+	log.WithField("address", cfg.Redis.Address).Info("connected to Redis successfully")
 
 	// Create context that listens for shutdown signals
 	ctx, cancel := context.WithCancel(context.Background())
@@ -215,11 +223,16 @@ func main() {
 		}).Info("bulk insert complete - starting real-time streaming from current position")
 
 		// Backfill Redis stream with 15-second aggregated data
-		log.Info("backfilling Redis stream with aggregated historical data")
+		log.WithFields(map[string]interface{}{
+			"current_date": currentDate.Format("2006-01-02"),
+			"redis_addr":   cfg.Redis.Address,
+		}).Info("backfilling Redis stream with aggregated historical data")
+
+		backfillStart := time.Now()
 		if err := backfillRedisStream(ctx, pool, redisClient, currentDate, log); err != nil {
-			log.WithError(err).Warn("failed to backfill Redis stream (non-critical)")
+			log.WithError(err).WithField("duration", time.Since(backfillStart)).Error("failed to backfill Redis stream (non-critical)")
 		} else {
-			log.Info("Redis stream backfill completed")
+			log.WithField("duration", time.Since(backfillStart)).Info("Redis stream backfill completed successfully")
 		}
 	} else {
 		log.Info("outside trading hours - will wait for session to start")
@@ -584,6 +597,12 @@ func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *r
 	startOfDay := time.Date(currentDate.Year(), currentDate.Month(), currentDate.Day(), 2, 0, 0, 0, time.UTC) // 9:00 AM Vietnam = 02:00 UTC
 	endTime := time.Now().UTC()
 
+	log.WithFields(map[string]interface{}{
+		"start_time": startOfDay.Format(time.RFC3339),
+		"end_time":   endTime.Format(time.RFC3339),
+		"duration":   endTime.Sub(startOfDay).String(),
+	}).Info("starting backfill query")
+
 	// Same query as GetHistoricalData() in market-service/internal/repository/postgres/repository.go
 	query := `
 		WITH time_series AS (
@@ -674,14 +693,21 @@ func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *r
 		ORDER BY bucket;
 	`
 
+	queryStart := time.Now()
+	log.Info("executing backfill query (this may take 10-30 seconds)...")
+
 	rows, err := pool.Query(ctx, query, startOfDay, endTime)
 	if err != nil {
+		log.WithError(err).Error("backfill query failed")
 		return fmt.Errorf("failed to query aggregated data: %w", err)
 	}
 	defer rows.Close()
 
+	log.WithField("query_duration", time.Since(queryStart)).Info("backfill query completed, processing rows")
+
 	count := 0
 	streamKey := "market:stream"
+	writeStart := time.Now()
 
 	for rows.Next() {
 		var timestamp int64
@@ -720,12 +746,20 @@ func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *r
 		}).Err()
 
 		if err != nil {
-			log.WithError(err).Warn("failed to write to Redis stream")
+			log.WithError(err).WithField("timestamp", timestamp).Warn("failed to write to Redis stream")
 		} else {
 			count++
+			// Log progress every 100 entries
+			if count%100 == 0 {
+				log.WithField("count", count).Debug("backfill progress")
+			}
 		}
 	}
 
-	log.WithField("count", count).Info("wrote aggregated data points to Redis stream")
+	log.WithFields(map[string]interface{}{
+		"count":          count,
+		"write_duration": time.Since(writeStart),
+		"total_duration": time.Since(writeStart),
+	}).Info("wrote aggregated data points to Redis stream")
 	return nil
 }

@@ -117,7 +117,7 @@ services:
 
       # Logging Config
       - key: MARKET_LOGGING_LEVEL
-        value: info
+        value: debug
       - key: MARKET_LOGGING_FORMAT
         value: json
       - key: MARKET_LOGGING_TIME_FORMAT

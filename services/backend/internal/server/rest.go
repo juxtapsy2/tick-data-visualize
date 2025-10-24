@@ -36,10 +36,10 @@ type HistoricalResponse struct {
 
 // LatestResponse represents the response for latest data query
 type LatestResponse struct {
-	Success   bool                   `json:"success"`
+	Success   bool                  `json:"success"`
 	Data      *repository.MarketData `json:"data,omitempty"`
-	Timestamp int64                  `json:"timestamp"`
-	Error     string                 `json:"error,omitempty"`
+	Timestamp int64                 `json:"timestamp"`
+	Error     string                `json:"error,omitempty"`
 }
 
 // ChartResponse represents the response for chart data (last 15s averages)
@@ -93,9 +93,20 @@ func (h *RESTHandler) HandleHistorical(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Default 'to' to now
+	// Default 'to' to 2:45 PM Vietnam time (market close)
 	if toParam == "" {
-		toTime = time.Now().UTC()
+		vietnamLocation := time.FixedZone("ICT", 7*60*60)
+		now := time.Now().In(vietnamLocation)
+
+		// Set to 2:45 PM today
+		toTime = time.Date(now.Year(), now.Month(), now.Day(), 14, 45, 0, 0, vietnamLocation)
+
+		// If we're before 2:45 PM, use current time instead
+		if now.Before(toTime) {
+			toTime = now
+		}
+
+		toTime = toTime.UTC()
 	} else {
 		toTime, err = h.parseTimestamp(toParam)
 		if err != nil {

@@ -113,10 +113,9 @@ func (c *Cache) AppendDataPoint(ctx context.Context, date string, point reposito
 	// Append new point
 	existing = append(existing, point)
 
-	// Calculate TTL until end of day in Vietnam timezone (UTC+7)
-	vietnamLocation := time.FixedZone("ICT", 7*60*60)
-	now := time.Now().In(vietnamLocation)
-	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, vietnamLocation)
+	// Calculate TTL until end of day
+	now := time.Now()
+	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, now.Location())
 	ttl := time.Until(endOfDay) + time.Hour
 
 	if ttl < time.Hour {
@@ -168,7 +167,7 @@ func (c *Cache) AppendToStream(ctx context.Context, point repository.MarketData)
 	// Add to stream with auto-generated ID
 	err := c.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: streamKey,
-		MaxLen: 3600, // Keep last 1 hour (3600 seconds at 1Hz)
+		MaxLen: 10000, // Keep enough for full trading day (about 1440 points at 15s intervals)
 		Approx: true,  // Allow approximate trimming for performance
 		Values: map[string]interface{}{
 			"timestamp": point.Timestamp,
@@ -238,7 +237,9 @@ func (c *Cache) GetStreamDataByTimeRange(ctx context.Context, fromTime, toTime t
 	fromUnix := fromTime.Unix()
 	toUnix := toTime.Unix()
 
-	var data []repository.MarketData
+	// Use map to deduplicate by timestamp (keeps latest value for each timestamp)
+	dataMap := make(map[int64]repository.MarketData)
+
 	for _, msg := range result {
 		timestamp, _ := msg.Values["timestamp"].(string)
 		vn30, _ := msg.Values["vn30"].(string)
@@ -250,22 +251,46 @@ func (c *Cache) GetStreamDataByTimeRange(ctx context.Context, fromTime, toTime t
 		fmt.Sscanf(vn30, "%f", &vn30Val)
 		fmt.Sscanf(hnx, "%f", &hnxVal)
 
-		// Filter by time range
+		// Filter by time range and deduplicate (later entries overwrite earlier ones)
 		if ts >= fromUnix && ts <= toUnix {
-			data = append(data, repository.MarketData{
+			dataMap[ts] = repository.MarketData{
 				Timestamp: ts,
 				VN30Value: vn30Val,
 				HNXValue:  hnxVal,
-			})
+			}
 		}
 	}
 
+	// Convert map to slice
+	data := make([]repository.MarketData, 0, len(dataMap))
+	for _, point := range dataMap {
+		data = append(data, point)
+	}
+
 	c.log.WithFields(map[string]interface{}{
-		"from":  fromTime,
-		"to":    toTime,
-		"count": len(data),
-		"total": len(result),
+		"from":         fromTime,
+		"to":           toTime,
+		"count":        len(data),
+		"total":        len(result),
+		"deduplicated": len(result) - len(data),
 	}).Debug("retrieved data from Redis stream by time range")
 
+	// Sort data by timestamp to ensure chronological order
+	// Redis Streams return data in insertion order, not timestamp order
+	sortByTimestamp(data)
+
 	return data, nil
+}
+
+// sortByTimestamp sorts market data by timestamp in ascending order
+func sortByTimestamp(data []repository.MarketData) {
+	// Simple bubble sort since data should be mostly sorted (only backfill + streaming mix)
+	n := len(data)
+	for i := 0; i < n-1; i++ {
+		for j := 0; j < n-i-1; j++ {
+			if data[j].Timestamp > data[j+1].Timestamp {
+				data[j], data[j+1] = data[j+1], data[j]
+			}
+		}
+	}
 }

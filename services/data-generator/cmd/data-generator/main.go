@@ -67,11 +67,6 @@ func main() {
 	log.Info("connected to database")
 
 	// Connect to Redis
-	log.WithFields(map[string]interface{}{
-		"address": cfg.Redis.Address,
-		"db":      cfg.Redis.DB,
-	}).Info("attempting to connect to Redis")
-
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:     cfg.Redis.Address,
 		Password: cfg.Redis.Password,
@@ -81,12 +76,9 @@ func main() {
 
 	// Test Redis connection
 	if err := redisClient.Ping(ctx).Err(); err != nil {
-		log.WithError(err).WithFields(map[string]interface{}{
-			"address": cfg.Redis.Address,
-			"db":      cfg.Redis.DB,
-		}).Fatal("failed to connect to Redis")
+		log.WithError(err).Fatal("failed to connect to Redis")
 	}
-	log.WithField("address", cfg.Redis.Address).Info("connected to Redis successfully")
+	log.Info("connected to Redis")
 
 	// Create context that listens for shutdown signals
 	ctx, cancel := context.WithCancel(context.Background())
@@ -155,36 +147,34 @@ func main() {
 	currentSecond := now.Second()
 
 	// Determine if we should bulk insert historical data
-	// Backfill data for today if:
-	// 1. Currently in trading hours (9:00 AM - 2:45 PM), OR
-	// 2. After trading hours but still same day (before midnight)
+	// Bulk insert anytime from 9:00 AM onwards (but not during overnight 0:00-8:59 AM)
 	indexIdx := 0
 	futuresIdx := 0
 
-	shouldBackfill := false
-	var backfillEndTime int // Time in seconds to backfill up to
+	if currentHour >= 9 {
+		// Bulk insert data from 9:00 AM up to current time (or 14:45 if past market close)
+		log.Info("bulk inserting historical data from 9:00 AM")
 
-	if currentHour >= 9 && (currentHour < 14 || (currentHour == 14 && currentMinute <= 45)) {
-		// We're in morning session (9:00 AM - 2:45 PM)
-		// Bulk insert all data from 9:00 AM to current time
-		shouldBackfill = true
-		backfillEndTime = currentHour*3600 + currentMinute*60 + currentSecond
-		log.Info("in trading hours - bulk inserting historical data from 9:00 AM to current time")
-	} else if currentHour >= 15 && currentHour < 24 {
-		// After trading hours but same day - backfill entire trading session
-		shouldBackfill = true
-		backfillEndTime = 14*3600 + 45*60 // 2:45 PM
-		log.Info("after trading hours - bulk inserting full trading day data (9:00 AM - 2:45 PM)")
-	}
+		// Calculate target time in HH:MM:SS format
+		// Cap at 14:45 (market close time) if current time is past that
+		var targetTimeInSeconds int
+		if currentHour > 14 || (currentHour == 14 && currentMinute >= 45) {
+			// Past 14:45, insert up to end of trading day
+			targetTimeInSeconds = 14*3600 + 45*60 // 14:45:00
+			log.Info("past market close - bulk inserting up to 14:45")
+		} else {
+			// During market hours, insert up to current time
+			targetTimeInSeconds = currentHour*3600 + currentMinute*60 + currentSecond
+			log.WithField("target_time", now.Format("15:04:05")).Info("during market hours - bulk inserting up to current time")
+		}
 
-	if shouldBackfill {
-		// Bulk insert index_tick data up to backfill end time
+		// Bulk insert index_tick data up to target time
 		bulkInsertCount := 0
 		for i, row := range indexRows {
 			csvTime := time.UnixMilli(row.Timestamp).In(vietnamLocation)
 			csvTimeInSeconds := csvTime.Hour()*3600 + csvTime.Minute()*60 + csvTime.Second()
 
-			if csvTimeInSeconds <= backfillEndTime {
+			if csvTimeInSeconds <= targetTimeInSeconds {
 				if err := insertIndexTick(ctx, pool, row, dateOffset, log); err != nil {
 					log.WithError(err).Error("failed to bulk insert index tick")
 				} else {
@@ -197,13 +187,13 @@ func main() {
 		}
 		log.WithField("count", bulkInsertCount).Info("bulk inserted index_tick historical data")
 
-		// Bulk insert futures data up to backfill end time
+		// Bulk insert futures data up to target time
 		bulkInsertCount = 0
 		for i, row := range futuresRows {
 			csvTime := time.UnixMilli(row.Timestamp).In(vietnamLocation)
 			csvTimeInSeconds := csvTime.Hour()*3600 + csvTime.Minute()*60 + csvTime.Second()
 
-			if csvTimeInSeconds <= backfillEndTime {
+			if csvTimeInSeconds <= targetTimeInSeconds {
 				if err := insertFutures(ctx, pool, row, dateOffset, log); err != nil {
 					log.WithError(err).Error("failed to bulk insert futures")
 				} else {
@@ -223,27 +213,18 @@ func main() {
 		}).Info("bulk insert complete - starting real-time streaming from current position")
 
 		// Backfill Redis stream with 15-second aggregated data
-		log.WithFields(map[string]interface{}{
-			"current_date": currentDate.Format("2006-01-02"),
-			"redis_addr":   cfg.Redis.Address,
-		}).Info("backfilling Redis stream with aggregated historical data")
-
-		backfillStart := time.Now()
+		log.Info("backfilling Redis stream with aggregated historical data")
 		if err := backfillRedisStream(ctx, pool, redisClient, currentDate, log); err != nil {
-			log.WithError(err).WithField("duration", time.Since(backfillStart)).Error("failed to backfill Redis stream (non-critical)")
+			log.WithError(err).Warn("failed to backfill Redis stream (non-critical)")
 		} else {
-			log.WithField("duration", time.Since(backfillStart)).Info("Redis stream backfill completed successfully")
+			log.Info("Redis stream backfill completed")
 		}
 	} else {
-		log.Info("outside trading hours - will wait for session to start")
+		log.WithField("current_hour", currentHour).Info("overnight hours (00:00-08:59) - skipping bulk insert, will wait for 9:00 AM")
 	}
 
 	// Start real-time streaming
-	insertInterval := 1 * time.Second
-	ticker := time.NewTicker(insertInterval)
-	defer ticker.Stop()
-
-	log.WithField("interval", insertInterval).Info("starting real-time data insertion")
+	log.Info("starting real-time data insertion")
 
 	// Session tracking
 	var currentSession string
@@ -255,13 +236,16 @@ func main() {
 		sessionStarted = true
 	}
 
+	// Track previous timestamp to calculate sleep duration
+	var lastInsertTime int64 = 0
+
 	for {
 		select {
 		case <-ctx.Done():
 			log.Info("data generator stopped")
 			return
 
-		case <-ticker.C:
+		default:
 			now := time.Now().In(vietnamLocation)
 			currentHour := now.Hour()
 
@@ -275,6 +259,7 @@ func main() {
 					futuresIdx = 0
 				}
 				sessionStarted = true
+				lastInsertTime = 0 // Reset timing on session start
 				log.Info("starting morning session (9:00 AM - 2:45 PM)")
 			} else if currentHour >= 19 && currentSession != "evening" {
 				// Start evening session (7:00 PM onwards)
@@ -282,6 +267,7 @@ func main() {
 				indexIdx = 0
 				futuresIdx = 0
 				sessionStarted = true
+				lastInsertTime = 0 // Reset timing on session start
 				log.Info("starting evening session (7:00 PM)")
 			} else if currentHour < 9 || (currentHour >= 15 && currentHour < 19) {
 				// Before 9:00 AM or between 3:00 PM - 6:59 PM - reset session
@@ -291,6 +277,7 @@ func main() {
 
 			// Skip if no active session or CSV data exhausted
 			if !sessionStarted {
+				time.Sleep(1 * time.Second) // Check again in 1 second
 				continue
 			}
 
@@ -298,12 +285,67 @@ func main() {
 			if indexIdx >= len(indexRows) && futuresIdx >= len(futuresRows) {
 				log.WithField("session", currentSession).Info("CSV data exhausted, waiting for next session")
 				sessionStarted = false
+				time.Sleep(1 * time.Second) // Check again in 1 second
 				continue
 			}
 
-			// Insert all index tick rows with the same timestamp
+			// Track the earliest timestamp we're about to insert
+			var currentTimestamp int64 = 0
+
+			// Get next timestamps from both datasets
+			var nextIndexTimestamp int64 = 0
+			var nextFuturesTimestamp int64 = 0
+
 			if indexIdx < len(indexRows) {
-				currentTimestamp := indexRows[indexIdx].Timestamp
+				nextIndexTimestamp = indexRows[indexIdx].Timestamp
+			}
+			if futuresIdx < len(futuresRows) {
+				nextFuturesTimestamp = futuresRows[futuresIdx].Timestamp
+			}
+
+			// Find the earliest timestamp to process
+			if nextIndexTimestamp > 0 && nextFuturesTimestamp > 0 {
+				if nextIndexTimestamp < nextFuturesTimestamp {
+					currentTimestamp = nextIndexTimestamp
+				} else {
+					currentTimestamp = nextFuturesTimestamp
+				}
+			} else if nextIndexTimestamp > 0 {
+				currentTimestamp = nextIndexTimestamp
+			} else if nextFuturesTimestamp > 0 {
+				currentTimestamp = nextFuturesTimestamp
+			}
+
+			// Calculate target real time for this CSV data point
+			// Apply date offset to get today's timestamp
+			offsetMillis := int64(dateOffset) * 24 * 60 * 60 * 1000 // Convert days to milliseconds
+			targetTime := time.UnixMilli(currentTimestamp + offsetMillis)
+			currentRealTime := time.Now()
+
+			// If target time is in the future, wait until that time
+			if targetTime.After(currentRealTime) {
+				sleepDuration := targetTime.Sub(currentRealTime)
+				log.WithFields(map[string]interface{}{
+					"sleep_ms":       sleepDuration.Milliseconds(),
+					"target_time":    targetTime.Format("15:04:05.000"),
+					"current_time":   currentRealTime.Format("15:04:05.000"),
+					"csv_timestamp":  currentTimestamp,
+				}).Debug("waiting until target real time")
+				time.Sleep(sleepDuration)
+			} else if lastInsertTime > 0 {
+				// If we're behind, log how far behind we are
+				behindBy := currentRealTime.Sub(targetTime)
+				if behindBy > 5*time.Second {
+					log.WithFields(map[string]interface{}{
+						"behind_seconds": behindBy.Seconds(),
+						"target_time":    targetTime.Format("15:04:05.000"),
+						"current_time":   currentRealTime.Format("15:04:05.000"),
+					}).Warn("catching up - inserting data from the past")
+				}
+			}
+
+			// Insert all index tick rows with the same timestamp
+			if indexIdx < len(indexRows) && indexRows[indexIdx].Timestamp == currentTimestamp {
 				insertedCount := 0
 
 				// Find all rows with the same timestamp and insert them
@@ -339,8 +381,7 @@ func main() {
 			}
 
 			// Insert all futures rows with the same timestamp
-			if futuresIdx < len(futuresRows) {
-				currentTimestamp := futuresRows[futuresIdx].Timestamp
+			if futuresIdx < len(futuresRows) && futuresRows[futuresIdx].Timestamp == currentTimestamp {
 				insertedCount := 0
 
 				// Find all rows with the same timestamp and insert them
@@ -374,6 +415,9 @@ func main() {
 					}).Info("inserted multiple futures rows with same timestamp")
 				}
 			}
+
+			// Update last insert time for next iteration
+			lastInsertTime = currentTimestamp
 		}
 	}
 }
@@ -597,12 +641,6 @@ func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *r
 	startOfDay := time.Date(currentDate.Year(), currentDate.Month(), currentDate.Day(), 2, 0, 0, 0, time.UTC) // 9:00 AM Vietnam = 02:00 UTC
 	endTime := time.Now().UTC()
 
-	log.WithFields(map[string]interface{}{
-		"start_time": startOfDay.Format(time.RFC3339),
-		"end_time":   endTime.Format(time.RFC3339),
-		"duration":   endTime.Sub(startOfDay).String(),
-	}).Info("starting backfill query")
-
 	// Same query as GetHistoricalData() in market-service/internal/repository/postgres/repository.go
 	query := `
 		WITH time_series AS (
@@ -693,44 +731,22 @@ func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *r
 		ORDER BY bucket;
 	`
 
-	queryStart := time.Now()
-	log.Info("executing backfill query (this may take 10-30 seconds)...")
-
 	rows, err := pool.Query(ctx, query, startOfDay, endTime)
 	if err != nil {
-		log.WithError(err).Error("backfill query failed")
 		return fmt.Errorf("failed to query aggregated data: %w", err)
 	}
 	defer rows.Close()
 
-	log.WithField("query_duration", time.Since(queryStart)).Info("backfill query completed, processing rows")
-
 	count := 0
 	streamKey := "market:stream"
-	writeStart := time.Now()
 
 	for rows.Next() {
 		var timestamp int64
-		var vn30Value, hnxValue *float64
+		var vn30Value, hnxValue float64
 
 		if err := rows.Scan(&timestamp, &vn30Value, &hnxValue); err != nil {
 			log.WithError(err).Warn("failed to scan row")
 			continue
-		}
-
-		// Skip if both values are NULL
-		if vn30Value == nil && hnxValue == nil {
-			continue
-		}
-
-		// Use 0 for NULL values
-		vn30 := float64(0)
-		hnx := float64(0)
-		if vn30Value != nil {
-			vn30 = *vn30Value
-		}
-		if hnxValue != nil {
-			hnx = *hnxValue
 		}
 
 		// Write to Redis stream
@@ -740,26 +756,18 @@ func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *r
 			Approx: true,
 			Values: map[string]interface{}{
 				"timestamp": timestamp,
-				"vn30":      vn30,
-				"hnx":       hnx,
+				"vn30":      vn30Value,
+				"hnx":       hnxValue,
 			},
 		}).Err()
 
 		if err != nil {
-			log.WithError(err).WithField("timestamp", timestamp).Warn("failed to write to Redis stream")
+			log.WithError(err).Warn("failed to write to Redis stream")
 		} else {
 			count++
-			// Log progress every 100 entries
-			if count%100 == 0 {
-				log.WithField("count", count).Debug("backfill progress")
-			}
 		}
 	}
 
-	log.WithFields(map[string]interface{}{
-		"count":          count,
-		"write_duration": time.Since(writeStart),
-		"total_duration": time.Since(writeStart),
-	}).Info("wrote aggregated data points to Redis stream")
+	log.WithField("count", count).Info("wrote aggregated data points to Redis stream")
 	return nil
 }

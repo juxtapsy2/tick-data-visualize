@@ -264,7 +264,7 @@ func (r *Repository) GetLast15sAverages(ctx context.Context, indexTickers []stri
 					AVG(last) as avg_value
 				FROM index_tick
 				WHERE ticker = ANY($1)
-					AND ts > NOW() - INTERVAL '15 seconds'
+					AND ts > (SELECT MAX(ts) FROM index_tick) - INTERVAL '15 seconds'
 					AND last IS NOT NULL
 				GROUP BY ticker
 			),
@@ -297,16 +297,11 @@ func (r *Repository) GetLast15sAverages(ctx context.Context, indexTickers []stri
 
 		for rows.Next() {
 			var data repository.ChartData
-			var value *float64
-			if err := rows.Scan(&data.Ticker, &value); err != nil {
+			if err := rows.Scan(&data.Ticker, &data.Value); err != nil {
 				r.log.WithError(err).Error("failed to scan index row")
 				return nil, fmt.Errorf("scan error: %w", err)
 			}
-			// Skip if no value available (NULL)
-			if value != nil {
-				data.Value = *value
-				results = append(results, data)
-			}
+			results = append(results, data)
 		}
 
 		if err := rows.Err(); err != nil {
@@ -323,7 +318,7 @@ func (r *Repository) GetLast15sAverages(ctx context.Context, indexTickers []stri
 					AVG(last) as avg_value
 				FROM futures_table
 				WHERE f = ANY($1)
-					AND ts > NOW() - INTERVAL '15 seconds'
+					AND ts > (SELECT MAX(ts) FROM futures_table) - INTERVAL '15 seconds'
 					AND last IS NOT NULL
 				GROUP BY f
 			),
@@ -356,16 +351,11 @@ func (r *Repository) GetLast15sAverages(ctx context.Context, indexTickers []stri
 
 		for rows.Next() {
 			var data repository.ChartData
-			var value *float64
-			if err := rows.Scan(&data.Ticker, &value); err != nil {
+			if err := rows.Scan(&data.Ticker, &data.Value); err != nil {
 				r.log.WithError(err).Error("failed to scan futures row")
 				return nil, fmt.Errorf("scan error: %w", err)
 			}
-			// Skip if no value available (NULL)
-			if value != nil {
-				data.Value = *value
-				results = append(results, data)
-			}
+			results = append(results, data)
 		}
 
 		if err := rows.Err(); err != nil {

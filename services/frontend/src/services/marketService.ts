@@ -38,20 +38,30 @@ export class MarketStreamService {
   }
 
   /**
-   * Get historical data for today using REST API
-   * Defaults: from=9:00 AM Vietnam time, to=now
+   * Get historical data using REST API
+   * @param from Optional start date (ISO 8601 or Unix timestamp)
+   * @param to Optional end date (ISO 8601 or Unix timestamp)
    * @returns Promise with array of historical data points
    */
-  async getHistoricalData(): Promise<Array<{
+  async getHistoricalData(from?: string, to?: string): Promise<Array<{
     timestamp: number;
     vn30Value: number;
     hnxValue: number;
   }>> {
     try {
-      console.log('Fetching historical data from REST API...');
+      // Build query string with optional from/to parameters
+      const params = new URLSearchParams();
+      if (from) params.append('from', from);
+      if (to) params.append('to', to);
 
-      // Call REST endpoint with default parameters (from=9:00 AM VN time, to=now)
-      const response = await fetch(`${this.httpHostname}/api/v1/market/historical`);
+      const queryString = params.toString();
+      const url = queryString
+        ? `${this.httpHostname}/api/v1/market/historical?${queryString}`
+        : `${this.httpHostname}/api/v1/market/historical`;
+
+      console.log('Fetching historical data from REST API:', url);
+
+      const response = await fetch(url);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));

@@ -57,11 +57,18 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 	query := `
 		WITH time_series AS (
 			-- Generate complete time series at 15-second intervals
-			SELECT generate_series(
+			-- Exclude break time 11:30 AM - 12:59:55 PM Vietnam time (04:30 - 05:59:55 UTC)
+			SELECT ts AS bucket
+			FROM generate_series(
 				date_trunc('second', $1::timestamp),
 				date_trunc('second', $2::timestamp),
 				'15 seconds'::interval
-			) AS bucket
+			) AS ts
+			WHERE NOT (
+				EXTRACT(HOUR FROM ts AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Bangkok') = 11
+				AND EXTRACT(MINUTE FROM ts AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Bangkok') >= 30
+			)
+			AND NOT (EXTRACT(HOUR FROM ts AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Bangkok') = 12)
 		),
 		vn30_buckets AS (
 			-- Aggregate VN30 data into 15-second buckets

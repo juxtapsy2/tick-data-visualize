@@ -114,18 +114,31 @@ func provideBroadcaster(repo repository.MarketRepository, cache repository.Cache
 }
 
 // isMarketOpen checks if Vietnam stock market is currently open
-// Vietnam market hours: 9:00 AM - 3:00 PM, Monday-Friday
+// Vietnam market hours: 9:00 AM - 11:30 AM and 1:00 PM - 3:00 PM, Monday-Friday
+// Lunch break: 11:30 AM - 1:00 PM
 func isMarketOpen() bool {
-	// TESTING: Always return true to test broadcast functionality
-	return true
+	vietnamLocation, _ := time.LoadLocation("Asia/Bangkok")
+	now := time.Now().In(vietnamLocation)
 
-	// TODO: Re-enable in production
-	// now := time.Now()
-	// if now.Weekday() == time.Saturday || now.Weekday() == time.Sunday {
-	// 	return false
-	// }
-	// hour := now.Hour()
-	// return hour >= 9 && hour < 15
+	// Check if weekend
+	if now.Weekday() == time.Saturday || now.Weekday() == time.Sunday {
+		return false
+	}
+
+	hour := now.Hour()
+	minute := now.Minute()
+
+	// Morning session: 9:00 AM - 11:29:59 AM
+	if hour >= 9 && (hour < 11 || (hour == 11 && minute < 30)) {
+		return true
+	}
+
+	// Afternoon session: 1:00 PM - 2:59:59 PM
+	if hour >= 13 && hour < 15 {
+		return true
+	}
+
+	return false
 }
 
 // provideWebSocketServer creates WebSocket server
@@ -222,16 +235,66 @@ func registerLifecycleHooks(lc fx.Lifecycle, log *logger.Logger, broadcaster *se
 		OnStart: func(ctx context.Context) error {
 			log.Info("market data service started successfully")
 
-			// Start timer-based polling scheduler (every 15 seconds)
-			broadcastTicker = time.NewTicker(15 * time.Second)
+			// Calculate delay to align to next :00, :15, :30, or :45 second mark
+			now := time.Now()
+			currentSecond := now.Second()
+			nextAlignedSecond := ((currentSecond / 15) + 1) * 15
+			if nextAlignedSecond >= 60 {
+				nextAlignedSecond = 0
+			}
+
+			var alignDelay time.Duration
+			if nextAlignedSecond > currentSecond {
+				alignDelay = time.Duration(nextAlignedSecond-currentSecond) * time.Second
+			} else {
+				// Next aligned second is in the next minute
+				alignDelay = time.Duration(60-currentSecond+nextAlignedSecond) * time.Second
+			}
+
+			log.WithFields(map[string]interface{}{
+				"current_second":  currentSecond,
+				"next_aligned":    nextAlignedSecond,
+				"align_delay_sec": alignDelay.Seconds(),
+			}).Info("waiting for time alignment before starting broadcast scheduler")
+
 			broadcastDone = make(chan bool)
 
 			go func() {
-				log.Info("starting 15-second broadcast scheduler")
+				// Wait for time alignment
+				time.Sleep(alignDelay)
+
+				log.Info("starting 15-second broadcast scheduler (aligned to :00, :15, :30, :45)")
+
+				// Start timer-based polling scheduler (every 15 seconds, now aligned)
+				broadcastTicker = time.NewTicker(15 * time.Second)
+				defer broadcastTicker.Stop()
 
 				// Define tickers to query
 				indexTickers := []string{"VN30"}
 				futuresTickers := []string{"f1"}
+
+				// Immediately query on alignment (don't wait for first tick)
+				func() {
+					if !isMarketOpen() {
+						log.Debug("market closed, skipping initial broadcast")
+						return
+					}
+
+					queryCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+
+					chartData, err := repo.GetLast15sAverages(queryCtx, indexTickers, futuresTickers)
+					if err != nil {
+						log.WithError(err).Error("failed to get 15s averages")
+						return
+					}
+
+					broadcaster.BroadcastChartData(chartData)
+					log.WithFields(map[string]interface{}{
+						"charts":  len(chartData),
+						"clients": broadcaster.GetActiveClientsCount(),
+					}).Info("initial broadcast completed (aligned)")
+				}()
 
 				for {
 					select {

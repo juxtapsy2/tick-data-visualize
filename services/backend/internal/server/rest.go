@@ -36,10 +36,10 @@ type HistoricalResponse struct {
 
 // LatestResponse represents the response for latest data query
 type LatestResponse struct {
-	Success   bool                  `json:"success"`
+	Success   bool                   `json:"success"`
 	Data      *repository.MarketData `json:"data,omitempty"`
-	Timestamp int64                 `json:"timestamp"`
-	Error     string                `json:"error,omitempty"`
+	Timestamp int64                  `json:"timestamp"`
+	Error     string                 `json:"error,omitempty"`
 }
 
 // ChartResponse represents the response for chart data (last 15s averages)
@@ -114,8 +114,12 @@ func (h *RESTHandler) HandleHistorical(w http.ResponseWriter, r *http.Request) {
 	var data []repository.MarketData
 	fromCache := false
 
-	// Try Redis first (if cache is available)
-	if h.cache != nil {
+	// Calculate time range duration
+	timeRange := toTime.Sub(fromTime)
+
+	// Try Redis first (if cache is available and time range is less than 24 hours)
+	// For longer ranges, go straight to PostgreSQL which has full historical data
+	if h.cache != nil && timeRange < 24*time.Hour {
 		data, err = h.cache.GetStreamDataByTimeRange(ctx, fromTime, toTime)
 		if err != nil {
 			h.log.WithError(err).Debug("failed to get data from Redis, falling back to PostgreSQL")
@@ -129,6 +133,8 @@ func (h *RESTHandler) HandleHistorical(w http.ResponseWriter, r *http.Request) {
 		} else {
 			h.log.Debug("no data in Redis stream, falling back to PostgreSQL")
 		}
+	} else if timeRange >= 24*time.Hour {
+		h.log.WithField("range", timeRange).Debug("time range > 24h, skipping Redis and querying PostgreSQL directly")
 	}
 
 	// Fallback to PostgreSQL if Redis has no data or failed

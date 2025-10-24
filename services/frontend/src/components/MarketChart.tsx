@@ -44,38 +44,7 @@ export const MarketChart = ({ data }: MarketChartProps) => {
       return date.toLocaleTimeString();
     });
     const vn30Values = displayData.map(d => d.vn30Value.toFixed(2));
-    const hnxValues = displayData.map(d => d.hnxValue.toFixed(2));
-
-    // Calculate dynamic y-axis ranges with padding (5x zoom = tighter range)
-    const calculateAxisRange = (values: number[]) => {
-      if (values.length === 0 || values.every(v => v === 0)) {
-        return { min: 0, max: 100 }; // Default range
-      }
-
-      const validValues = values.filter(v => v > 0);
-      if (validValues.length === 0) {
-        return { min: 0, max: 100 }; // Default range
-      }
-
-      const min = Math.min(...validValues);
-      const max = Math.max(...validValues);
-      const range = max - min;
-
-      // Aggressive zoom: 15% padding for better visibility of small variations
-      // This creates a 5x tighter view compared to default auto-scaling
-      const padding = Math.max(range * 0.15, 2);
-
-      return {
-        min: Math.floor(min - padding),
-        max: Math.ceil(max + padding),
-      };
-    };
-
-    const vn30NumericValues = displayData.map(d => d.vn30Value);
-    const hnxNumericValues = displayData.map(d => d.hnxValue);
-
-    const vn30Range = calculateAxisRange(vn30NumericValues);
-    const hnxRange = calculateAxisRange(hnxNumericValues);
+    const f1Values = displayData.map(d => d.hnxValue.toFixed(2));
 
     const option: echarts.EChartsOption = {
       title: {
@@ -99,7 +68,7 @@ export const MarketChart = ({ data }: MarketChartProps) => {
       },
       grid: {
         left: '3%',
-        right: '4%',
+        right: '3%',
         bottom: '10%',
         top: '15%',
         containLabel: true,
@@ -114,28 +83,15 @@ export const MarketChart = ({ data }: MarketChartProps) => {
           interval: Math.max(Math.floor(timestamps.length / 20), 0),
         },
       },
-      yAxis: [
-        {
-          type: 'value',
-          name: 'VN30',
-          position: 'left',
-          min: vn30Range.min,
-          max: vn30Range.max,
-          axisLabel: {
-            formatter: '{value}',
-          },
+      yAxis: {
+        type: 'value',
+        name: 'Index Value',
+        position: 'left',
+        scale: true,
+        axisLabel: {
+          formatter: '{value}',
         },
-        {
-          type: 'value',
-          name: 'F1',
-          position: 'right',
-          min: hnxRange.min,
-          max: hnxRange.max,
-          axisLabel: {
-            formatter: '{value}',
-          },
-        },
-      ],
+      },
       series: [
         {
           name: 'VN30 Index',
@@ -151,12 +107,11 @@ export const MarketChart = ({ data }: MarketChartProps) => {
             opacity: 0.1,
             color: '#5470c6',
           },
-          yAxisIndex: 0,
         },
         {
           name: 'F1',
           type: 'line',
-          data: hnxValues,
+          data: f1Values,
           smooth: true,
           symbol: 'none',
           lineStyle: {
@@ -167,7 +122,6 @@ export const MarketChart = ({ data }: MarketChartProps) => {
             opacity: 0.1,
             color: '#91cc75',
           },
-          yAxisIndex: 1,
         },
       ],
       animation: false, // Disable animation for real-time updates

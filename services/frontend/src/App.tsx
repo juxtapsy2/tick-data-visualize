@@ -28,8 +28,14 @@ function App() {
 
       // Load historical data first
       try {
-        console.log('Loading historical data...');
-        const historicalData = await serviceRef.current.getHistoricalData();
+        const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+        const startTime = `${today}T02:00:00Z`;
+        const endTime = `${today}T07:45:00Z`;
+        console.log(`Loading historical data (${today} 9:00 AM - 2:45 PM Vietnam time)...`);
+        const historicalData = await serviceRef.current.getHistoricalData(
+          startTime,
+          endTime
+        );
 
         if (historicalData.length > 0) {
           console.log('Loaded', historicalData.length, 'historical points');

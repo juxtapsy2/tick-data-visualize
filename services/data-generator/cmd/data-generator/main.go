@@ -326,10 +326,10 @@ func main() {
 			if targetTime.After(currentRealTime) {
 				sleepDuration := targetTime.Sub(currentRealTime)
 				log.WithFields(map[string]interface{}{
-					"sleep_ms":       sleepDuration.Milliseconds(),
-					"target_time":    targetTime.Format("15:04:05.000"),
-					"current_time":   currentRealTime.Format("15:04:05.000"),
-					"csv_timestamp":  currentTimestamp,
+					"sleep_ms":      sleepDuration.Milliseconds(),
+					"target_time":   targetTime.Format("15:04:05.000"),
+					"current_time":  currentRealTime.Format("15:04:05.000"),
+					"csv_timestamp": currentTimestamp,
 				}).Debug("waiting until target real time")
 				time.Sleep(sleepDuration)
 			} else if lastInsertTime > 0 {
@@ -569,7 +569,8 @@ func readFuturesCSV(filePath string, log *logger.Logger) ([]FuturesRow, error) {
 
 func insertIndexTick(ctx context.Context, pool *pgxpool.Pool, row IndexTickRow, timeOffset time.Duration, log *logger.Logger) error {
 	// Apply dynamic time offset to shift CSV data to current date
-	csvTimestamp := time.UnixMilli(row.Timestamp)
+	// Ensure timestamp is explicitly in UTC to avoid timezone issues
+	csvTimestamp := time.UnixMilli(row.Timestamp).UTC()
 	shiftedTimestamp := csvTimestamp.Add(timeOffset)
 
 	query := `
@@ -602,7 +603,8 @@ func insertIndexTick(ctx context.Context, pool *pgxpool.Pool, row IndexTickRow, 
 
 func insertFutures(ctx context.Context, pool *pgxpool.Pool, row FuturesRow, timeOffset time.Duration, log *logger.Logger) error {
 	// Apply dynamic time offset to shift CSV data to current date
-	csvTimestamp := time.UnixMilli(row.Timestamp)
+	// Ensure timestamp is explicitly in UTC to avoid timezone issues
+	csvTimestamp := time.UnixMilli(row.Timestamp).UTC()
 	shiftedTimestamp := csvTimestamp.Add(timeOffset)
 
 	query := `

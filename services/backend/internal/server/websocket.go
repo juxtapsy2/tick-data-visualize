@@ -189,13 +189,19 @@ func (ws *WebSocketServer) handleHistoricalRequest(conn *websocket.Conn, clientI
 		return
 	}
 
-	// Get all data for the requested date
-	startTime := time.Date(parsedDate.Year(), parsedDate.Month(), parsedDate.Day(), 0, 0, 0, 0, time.UTC)
-	endTime := time.Now()
+	// Use Vietnam timezone for date calculations
+	vietnamLocation := time.FixedZone("ICT", 7*60*60)
+	now := time.Now().In(vietnamLocation)
+	todayVietnam := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, vietnamLocation)
 
-	// If requesting historical date (not today), set end time to end of day
-	if !parsedDate.Equal(time.Now().UTC().Truncate(24 * time.Hour)) {
-		endTime = time.Date(parsedDate.Year(), parsedDate.Month(), parsedDate.Day(), 23, 59, 59, 0, time.UTC)
+	// Get all data for the requested date (9:00 AM - 2:45 PM Vietnam time for trading hours)
+	startTime := time.Date(parsedDate.Year(), parsedDate.Month(), parsedDate.Day(), 9, 0, 0, 0, vietnamLocation).UTC()
+	endTime := time.Now().UTC()
+
+	// If requesting historical date (not today in Vietnam time), set end time to end of trading day
+	requestedDateVietnam := time.Date(parsedDate.Year(), parsedDate.Month(), parsedDate.Day(), 0, 0, 0, 0, vietnamLocation)
+	if !requestedDateVietnam.Equal(todayVietnam) {
+		endTime = time.Date(parsedDate.Year(), parsedDate.Month(), parsedDate.Day(), 14, 45, 0, 0, vietnamLocation).UTC()
 	}
 
 	// Query database

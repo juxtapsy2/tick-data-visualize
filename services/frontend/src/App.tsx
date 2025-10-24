@@ -28,10 +28,25 @@ function App() {
 
       // Load historical data first
       try {
-        const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-        const startTime = `${today}T09:00:00Z`;
-        const endTime = `${today}T14:45:00Z`;
-        console.log(`Loading historical data (${today} 9:00 AM - 2:45 PM Vietnam time)...`);
+        // Get current date/time in Vietnam timezone (UTC+7)
+        const now = new Date();
+        const vietnamOffset = 7 * 60; // Vietnam is UTC+7
+        const vietnamTime = new Date(now.getTime() + (vietnamOffset + now.getTimezoneOffset()) * 60 * 1000);
+
+        // Get today's date in Vietnam
+        const year = vietnamTime.getFullYear();
+        const month = String(vietnamTime.getMonth() + 1).padStart(2, '0');
+        const day = String(vietnamTime.getDate()).padStart(2, '0');
+        const todayVietnam = `${year}-${month}-${day}`;
+
+        // Create start time: 9:00 AM Vietnam time
+        const startTimeVietnam = new Date(`${todayVietnam}T09:00:00+07:00`);
+        // Create end time: 2:45 PM Vietnam time
+        const endTimeVietnam = new Date(`${todayVietnam}T14:45:00+07:00`);
+
+        const startTime = startTimeVietnam.toISOString();
+        const endTime = endTimeVietnam.toISOString();
+        console.log(`Loading historical data (${todayVietnam} 9:00 AM - 2:45 PM Vietnam time)...`);
         const historicalData = await serviceRef.current.getHistoricalData(
           startTime,
           endTime

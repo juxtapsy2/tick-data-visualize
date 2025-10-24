@@ -733,11 +733,14 @@ func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *r
 			hnx = *hnxValue
 		}
 
-		// Write to Redis stream
+		// Write to Redis stream with explicit ID from historical timestamp
+		// Redis stream IDs are in milliseconds, our timestamp is in seconds
+		streamID := fmt.Sprintf("%d-0", timestamp*1000)
 		err := redisClient.XAdd(ctx, &redis.XAddArgs{
 			Stream: streamKey,
 			MaxLen: 10000, // Keep enough for full trading day (6 hours * 240 points/hour = 1440, so 10000 is plenty)
 			Approx: true,
+			ID:     streamID,
 			Values: map[string]interface{}{
 				"timestamp": timestamp,
 				"vn30":      vn30,

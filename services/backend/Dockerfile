@@ -9,10 +9,10 @@ WORKDIR /build
 COPY shared/ ./shared/
 
 # Copy service code
-COPY services/market-service/ /build/services/market-service/
+COPY services/backend/ /build/services/backend/
 
 # Work in service directory
-WORKDIR /build/services/market-service
+WORKDIR /build/services/backend
 
 # Download dependencies and generate go.sum
 RUN go mod tidy && go mod download
@@ -34,7 +34,6 @@ RUN addgroup -g 1000 app && \
 WORKDIR /app
 
 COPY --from=builder /build/market-service /app/market-service
-COPY configs /app/configs
 
 RUN chown -R app:app /app
 

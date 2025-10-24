@@ -74,6 +74,12 @@ export class MarketStreamService {
         throw new Error(result.error || 'Failed to fetch historical data');
       }
 
+      // Handle null or empty data gracefully
+      if (!result.data || !Array.isArray(result.data)) {
+        console.warn('No historical data available from backend');
+        return [];
+      }
+
       // Transform backend response to frontend format
       const historicalData = result.data.map((point: any) => ({
         timestamp: point.Timestamp,

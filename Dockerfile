@@ -91,9 +91,6 @@ WORKDIR /app
 COPY --from=backend-builder /build/market-service /app/market-service
 COPY --from=data-generator-builder /build/data-generator /app/data-generator
 
-# Copy config files
-COPY configs /app/configs
-
 # Copy CSV data for data generator
 COPY services/data-generator/data /app/data
 

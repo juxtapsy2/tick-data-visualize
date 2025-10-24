@@ -42,7 +42,6 @@ RUN addgroup -g 1000 app && \
 WORKDIR /app
 
 COPY --from=builder /build/data-generator /app/data-generator
-COPY configs /app/configs
 COPY services/data-generator/data /app/data
 
 RUN chown -R app:app /app

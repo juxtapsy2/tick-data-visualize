@@ -29,8 +29,8 @@ function App() {
       // Load historical data first
       try {
         const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-        const startTime = `${today}T02:00:00Z`;
-        const endTime = `${today}T07:45:00Z`;
+        const startTime = `${today}T09:00:00Z`;
+        const endTime = `${today}T14:45:00Z`;
         console.log(`Loading historical data (${today} 9:00 AM - 2:45 PM Vietnam time)...`);
         const historicalData = await serviceRef.current.getHistoricalData(
           startTime,

@@ -121,9 +121,9 @@ func isMarketOpen() bool {
 	now := time.Now().In(vietnamLocation)
 
 	// Check if weekend
-	// if now.Weekday() == time.Saturday || now.Weekday() == time.Sunday {
-	// 	return false
-	// }
+	if now.Weekday() == time.Saturday || now.Weekday() == time.Sunday {
+		return false
+	}
 
 	hour := now.Hour()
 	minute := now.Minute()

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -130,13 +131,19 @@ func main() {
 	// Calculate time offset to shift CSV data to current date
 	// CSV data is from Oct 3, 2025 - we shift it to today
 	csvBaseDate := time.Date(2025, 10, 3, 0, 0, 0, 0, time.UTC)
-	currentDate := time.Now().UTC().Truncate(24 * time.Hour)
+	nowUTC := time.Now().UTC()
+	currentDate := time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day(), 0, 0, 0, 0, time.UTC)
 	dateOffset := currentDate.Sub(csvBaseDate)
 
 	log.WithFields(map[string]interface{}{
-		"csv_base_date": csvBaseDate.Format("2006-01-02"),
-		"current_date":  currentDate.Format("2006-01-02"),
-		"offset_days":   dateOffset.Hours() / 24,
+		"csv_base_date":        csvBaseDate.Format("2006-01-02 15:04:05 MST"),
+		"csv_base_unix":        csvBaseDate.Unix(),
+		"current_date":         currentDate.Format("2006-01-02 15:04:05 MST"),
+		"current_date_unix":    currentDate.Unix(),
+		"offset_days":          dateOffset.Hours() / 24,
+		"offset_seconds":       int64(dateOffset.Seconds()),
+		"csv_sample_original":  1759456800,
+		"csv_sample_expected":  1759456800 + int64(dateOffset.Seconds()),
 	}).Info("calculated time offset for CSV data")
 
 	// Check current time in Vietnam timezone
@@ -168,40 +175,77 @@ func main() {
 			log.WithField("target_time", now.Format("15:04:05")).Info("during market hours - bulk inserting up to current time")
 		}
 
-		// Bulk insert index_tick data up to target time
+		// Bulk insert index_tick data up to target time (in batches of 1000)
 		bulkInsertCount := 0
+		batchSize := 1000
+		batch := make([]IndexTickRow, 0, batchSize)
+
 		for i, row := range indexRows {
 			csvTime := time.UnixMilli(row.Timestamp).In(vietnamLocation)
 			csvTimeInSeconds := csvTime.Hour()*3600 + csvTime.Minute()*60 + csvTime.Second()
 
 			if csvTimeInSeconds <= targetTimeInSeconds {
-				if err := insertIndexTick(ctx, pool, row, dateOffset, log); err != nil {
-					log.WithError(err).Error("failed to bulk insert index tick")
-				} else {
-					bulkInsertCount++
-				}
+				batch = append(batch, row)
 				indexIdx = i + 1
+
+				// Insert batch when it reaches 1000 rows
+				if len(batch) >= batchSize {
+					if err := batchInsertIndexTick(ctx, pool, batch, dateOffset, log); err != nil {
+						log.WithError(err).Error("failed to batch insert index tick")
+					} else {
+						bulkInsertCount += len(batch)
+						log.WithField("count", bulkInsertCount).Debug("batch inserted index_tick rows")
+					}
+					batch = make([]IndexTickRow, 0, batchSize)
+				}
 			} else {
 				break
 			}
 		}
+
+		// Insert remaining rows in the batch
+		if len(batch) > 0 {
+			if err := batchInsertIndexTick(ctx, pool, batch, dateOffset, log); err != nil {
+				log.WithError(err).Error("failed to batch insert index tick (final batch)")
+			} else {
+				bulkInsertCount += len(batch)
+			}
+		}
 		log.WithField("count", bulkInsertCount).Info("bulk inserted index_tick historical data")
 
-		// Bulk insert futures data up to target time
+		// Bulk insert futures data up to target time (in batches of 1000)
 		bulkInsertCount = 0
+		futuresBatch := make([]FuturesRow, 0, batchSize)
+
 		for i, row := range futuresRows {
 			csvTime := time.UnixMilli(row.Timestamp).In(vietnamLocation)
 			csvTimeInSeconds := csvTime.Hour()*3600 + csvTime.Minute()*60 + csvTime.Second()
 
 			if csvTimeInSeconds <= targetTimeInSeconds {
-				if err := insertFutures(ctx, pool, row, dateOffset, log); err != nil {
-					log.WithError(err).Error("failed to bulk insert futures")
-				} else {
-					bulkInsertCount++
-				}
+				futuresBatch = append(futuresBatch, row)
 				futuresIdx = i + 1
+
+				// Insert batch when it reaches 1000 rows
+				if len(futuresBatch) >= batchSize {
+					if err := batchInsertFutures(ctx, pool, futuresBatch, dateOffset, log); err != nil {
+						log.WithError(err).Error("failed to batch insert futures")
+					} else {
+						bulkInsertCount += len(futuresBatch)
+						log.WithField("count", bulkInsertCount).Debug("batch inserted futures rows")
+					}
+					futuresBatch = make([]FuturesRow, 0, batchSize)
+				}
 			} else {
 				break
+			}
+		}
+
+		// Insert remaining rows in the batch
+		if len(futuresBatch) > 0 {
+			if err := batchInsertFutures(ctx, pool, futuresBatch, dateOffset, log); err != nil {
+				log.WithError(err).Error("failed to batch insert futures (final batch)")
+			} else {
+				bulkInsertCount += len(futuresBatch)
 			}
 		}
 		log.WithField("count", bulkInsertCount).Info("bulk inserted futures historical data")
@@ -261,16 +305,15 @@ func main() {
 				sessionStarted = true
 				lastInsertTime = 0 // Reset timing on session start
 				log.Info("starting morning session (9:00 AM - 2:45 PM)")
-			} else if currentHour >= 19 && currentSession != "evening" {
-				// Start evening session (7:00 PM onwards)
-				currentSession = "evening"
-				indexIdx = 0
-				futuresIdx = 0
-				sessionStarted = true
-				lastInsertTime = 0 // Reset timing on session start
-				log.Info("starting evening session (7:00 PM)")
-			} else if currentHour < 9 || (currentHour >= 15 && currentHour < 19) {
-				// Before 9:00 AM or between 3:00 PM - 6:59 PM - reset session
+			} else if currentHour < 9 || currentHour >= 15 {
+				// Before 9:00 AM or after 3:00 PM - end trading session
+				if sessionStarted {
+					log.WithFields(map[string]interface{}{
+						"current_hour":     currentHour,
+						"index_position":   indexIdx,
+						"futures_position": futuresIdx,
+					}).Info("market closed - stopping data insertion until next trading day")
+				}
 				currentSession = ""
 				sessionStarted = false
 			}
@@ -636,6 +679,111 @@ func insertFutures(ctx context.Context, pool *pgxpool.Pool, row FuturesRow, time
 	return err
 }
 
+// batchInsertIndexTick inserts multiple index_tick rows in a single database call
+func batchInsertIndexTick(ctx context.Context, pool *pgxpool.Pool, rows []IndexTickRow, timeOffset time.Duration, log *logger.Logger) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	// Build multi-row INSERT statement
+	valueStrings := make([]string, 0, len(rows))
+	valueArgs := make([]interface{}, 0, len(rows)*11)
+
+	for i, row := range rows {
+		csvTimestamp := time.UnixMilli(row.Timestamp).UTC()
+		shiftedTimestamp := csvTimestamp.Add(timeOffset)
+
+		// Debug log first row
+		if i == 0 {
+			log.WithFields(map[string]interface{}{
+				"csv_ts_ms":      row.Timestamp,
+				"csv_ts":         csvTimestamp.Format("2006-01-02 15:04:05 UTC"),
+				"csv_unix":       csvTimestamp.Unix(),
+				"offset_seconds": int64(timeOffset.Seconds()),
+				"shifted_ts":     shiftedTimestamp.Format("2006-01-02 15:04:05 UTC"),
+				"shifted_unix":   shiftedTimestamp.Unix(),
+			}).Info("first batch insert row")
+		}
+
+		valueStrings = append(valueStrings, fmt.Sprintf(
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			i*11+1, i*11+2, i*11+3, i*11+4, i*11+5,
+			i*11+6, i*11+7, i*11+8, i*11+9, i*11+10, i*11+11,
+		))
+
+		valueArgs = append(valueArgs,
+			shiftedTimestamp,
+			shiftedTimestamp.UnixMilli(),
+			row.FormattedTime,
+			row.Session,
+			row.Ticker,
+			row.Last,
+			row.Change,
+			row.PctChange,
+			row.MatchedVol,
+			row.MatchedVal,
+			row.Category,
+		)
+	}
+
+	query := fmt.Sprintf(`
+		INSERT INTO index_tick (
+			ts, timestamp, formatted_time, session, ticker,
+			last, change, pct_change, matched_vol, matched_val, category
+		) VALUES %s
+	`, strings.Join(valueStrings, ","))
+
+	_, err := pool.Exec(ctx, query, valueArgs...)
+	return err
+}
+
+// batchInsertFutures inserts multiple futures rows in a single database call
+func batchInsertFutures(ctx context.Context, pool *pgxpool.Pool, rows []FuturesRow, timeOffset time.Duration, log *logger.Logger) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	// Build multi-row INSERT statement
+	valueStrings := make([]string, 0, len(rows))
+	valueArgs := make([]interface{}, 0, len(rows)*12)
+
+	for i, row := range rows {
+		csvTimestamp := time.UnixMilli(row.Timestamp).UTC()
+		shiftedTimestamp := csvTimestamp.Add(timeOffset)
+
+		valueStrings = append(valueStrings, fmt.Sprintf(
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			i*12+1, i*12+2, i*12+3, i*12+4, i*12+5, i*12+6,
+			i*12+7, i*12+8, i*12+9, i*12+10, i*12+11, i*12+12,
+		))
+
+		valueArgs = append(valueArgs,
+			shiftedTimestamp,
+			shiftedTimestamp.UnixMilli(),
+			row.FormattedTime,
+			row.Session,
+			row.Ticker,
+			row.F,
+			row.Last,
+			row.Change,
+			row.PctChange,
+			row.TotalVol,
+			row.TotalVal,
+			row.Category,
+		)
+	}
+
+	query := fmt.Sprintf(`
+		INSERT INTO futures_table (
+			ts, timestamp, formatted_time, session, ticker,
+			f, last, change, pct_change, total_vol, total_val, category
+		) VALUES %s
+	`, strings.Join(valueStrings, ","))
+
+	_, err := pool.Exec(ctx, query, valueArgs...)
+	return err
+}
+
 // backfillRedisStream queries PostgreSQL for 15-second aggregated data and writes to Redis stream
 // Uses the same query logic as GetHistoricalData() to ensure consistency
 func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *redis.Client, currentDate time.Time, log *logger.Logger) error {
@@ -650,15 +798,15 @@ func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *r
 			-- Exclude break time 11:30 AM - 12:59:55 PM Vietnam time (04:30 - 05:59:55 UTC)
 			SELECT ts AS bucket
 			FROM generate_series(
-				date_trunc('second', $1::timestamp),
-				date_trunc('second', $2::timestamp),
+				date_trunc('second', $1::timestamptz),
+				date_trunc('second', $2::timestamptz),
 				'15 seconds'::interval
 			) AS ts
 			WHERE NOT (
-				EXTRACT(HOUR FROM ts AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Bangkok') = 11
-				AND EXTRACT(MINUTE FROM ts AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Bangkok') >= 30
+				EXTRACT(HOUR FROM ts AT TIME ZONE 'Asia/Ho_Chi_Minh') = 11
+				AND EXTRACT(MINUTE FROM ts AT TIME ZONE 'Asia/Ho_Chi_Minh') >= 30
 			)
-			AND NOT (EXTRACT(HOUR FROM ts AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Bangkok') = 12)
+			AND NOT (EXTRACT(HOUR FROM ts AT TIME ZONE 'Asia/Ho_Chi_Minh') = 12)
 		),
 		vn30_buckets AS (
 			-- Aggregate VN30 data into 15-second buckets
@@ -733,6 +881,11 @@ func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *r
 		ORDER BY bucket;
 	`
 
+	log.WithFields(map[string]interface{}{
+		"start_time": startOfDay.Format("2006-01-02 15:04:05 UTC"),
+		"end_time":   endTime.Format("2006-01-02 15:04:05 UTC"),
+	}).Info("querying aggregated data for Redis backfill")
+
 	rows, err := pool.Query(ctx, query, startOfDay, endTime)
 	if err != nil {
 		return fmt.Errorf("failed to query aggregated data: %w", err)
@@ -751,13 +904,26 @@ func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *r
 			continue
 		}
 
-		// Write to Redis stream
+		// Log first timestamp for debugging
+		if count == 0 {
+			log.WithFields(map[string]interface{}{
+				"unix_timestamp": timestamp,
+				"readable_time":  time.Unix(timestamp, 0).UTC().Format("2006-01-02 15:04:05 UTC"),
+			}).Info("first Redis stream entry")
+		}
+
+		// Write to Redis stream with custom ID based on timestamp
+		// Stream ID format: <millisecond-timestamp>-0
+		// This allows Redis to filter efficiently by time range
+		streamID := fmt.Sprintf("%d-0", timestamp*1000) // Convert seconds to milliseconds
+
 		err := redisClient.XAdd(ctx, &redis.XAddArgs{
 			Stream: streamKey,
-			MaxLen: 10000, // Keep enough for full trading day (6 hours * 240 points/hour = 1440, so 10000 is plenty)
+			ID:     streamID, // Use data timestamp as Stream ID for efficient filtering
+			MaxLen: 1200,     // Keep max 1200 entries (~5 hours of 15s intervals)
 			Approx: true,
 			Values: map[string]interface{}{
-				"timestamp": timestamp,
+				"timestamp": timestamp, // Keep for easy reading
 				"vn30":      vn30Value,
 				"hnx":       hnxValue,
 			},

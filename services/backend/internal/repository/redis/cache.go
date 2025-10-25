@@ -164,13 +164,18 @@ func (c *Cache) FlushAll(ctx context.Context) error {
 func (c *Cache) AppendToStream(ctx context.Context, point repository.MarketData) error {
 	streamKey := "market:stream"
 
-	// Add to stream with auto-generated ID
+	// Use data timestamp as Stream ID for efficient time-based filtering
+	// Stream ID format: <millisecond-timestamp>-0
+	streamID := fmt.Sprintf("%d-0", point.Timestamp*1000) // Convert seconds to milliseconds
+
+	// Add to stream with custom ID based on data timestamp
 	err := c.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: streamKey,
-		MaxLen: 10000, // Keep enough for full trading day (about 1440 points at 15s intervals)
-		Approx: true,  // Allow approximate trimming for performance
+		ID:     streamID, // Use data timestamp as Stream ID for efficient filtering
+		MaxLen: 1200,     // Keep max 1200 entries (~5 hours of 15s intervals)
+		Approx: true,     // Allow approximate trimming for performance
 		Values: map[string]interface{}{
-			"timestamp": point.Timestamp,
+			"timestamp": point.Timestamp, // Keep for easy reading
 			"vn30":      point.VN30Value,
 			"hnx":       point.HNXValue,
 		},
@@ -220,25 +225,40 @@ func (c *Cache) GetRecentDataFromStream(ctx context.Context, seconds int) ([]rep
 
 // GetStreamDataByTimeRange retrieves data from Redis Stream within a time range
 // Returns data points where fromTime <= timestamp <= toTime
+// Uses timestamp-based Stream IDs for efficient server-side filtering
 func (c *Cache) GetStreamDataByTimeRange(ctx context.Context, fromTime, toTime time.Time) ([]repository.MarketData, error) {
 	streamKey := "market:stream"
 
-	// Read all entries from stream (limited by MaxLen in XAdd)
-	result, err := c.client.XRange(ctx, streamKey, "-", "+").Result()
+	// Convert time range to Stream IDs (millisecond timestamps)
+	// Stream ID format: <millisecond-timestamp>-0
+	startID := fmt.Sprintf("%d-0", fromTime.UnixMilli())
+	endID := fmt.Sprintf("%d-0", toTime.UnixMilli())
+
+	// Let Redis filter by Stream ID on the server side (much faster!)
+	// This only retrieves entries within the time range instead of fetching all 10,000
+	result, err := c.client.XRange(ctx, streamKey, startID, endID).Result()
 	if err != nil {
 		return nil, fmt.Errorf("redis stream read error: %w", err)
 	}
 
 	if len(result) == 0 {
-		c.log.Debug("no data in Redis stream")
+		c.log.WithFields(map[string]interface{}{
+			"from": fromTime.Format("2006-01-02 15:04:05"),
+			"to":   toTime.Format("2006-01-02 15:04:05"),
+		}).Debug("no data in Redis stream for time range")
 		return nil, nil
 	}
 
-	fromUnix := fromTime.Unix()
-	toUnix := toTime.Unix()
+	c.log.WithFields(map[string]interface{}{
+		"from":  fromTime.Format("2006-01-02 15:04:05"),
+		"to":    toTime.Format("2006-01-02 15:04:05"),
+		"count": len(result),
+	}).Debug("retrieved data from Redis stream using server-side filtering")
 
-	// Use map to deduplicate by timestamp (keeps latest value for each timestamp)
-	dataMap := make(map[int64]repository.MarketData)
+	// Build slice directly from Redis results
+	// No deduplication needed: Redis Stream IDs are unique, so duplicates are impossible
+	// No sorting needed: XRange returns entries ordered by Stream ID (which are timestamps)
+	data := make([]repository.MarketData, 0, len(result))
 
 	for _, msg := range result {
 		timestamp, _ := msg.Values["timestamp"].(string)
@@ -251,46 +271,19 @@ func (c *Cache) GetStreamDataByTimeRange(ctx context.Context, fromTime, toTime t
 		fmt.Sscanf(vn30, "%f", &vn30Val)
 		fmt.Sscanf(hnx, "%f", &hnxVal)
 
-		// Filter by time range and deduplicate (later entries overwrite earlier ones)
-		if ts >= fromUnix && ts <= toUnix {
-			dataMap[ts] = repository.MarketData{
-				Timestamp: ts,
-				VN30Value: vn30Val,
-				HNXValue:  hnxVal,
-			}
-		}
-	}
-
-	// Convert map to slice
-	data := make([]repository.MarketData, 0, len(dataMap))
-	for _, point := range dataMap {
-		data = append(data, point)
+		data = append(data, repository.MarketData{
+			Timestamp: ts,
+			VN30Value: vn30Val,
+			HNXValue:  hnxVal,
+		})
 	}
 
 	c.log.WithFields(map[string]interface{}{
-		"from":         fromTime,
-		"to":           toTime,
-		"count":        len(data),
-		"total":        len(result),
-		"deduplicated": len(result) - len(data),
+		"from":  fromTime,
+		"to":    toTime,
+		"count": len(data),
 	}).Debug("retrieved data from Redis stream by time range")
-
-	// Sort data by timestamp to ensure chronological order
-	// Redis Streams return data in insertion order, not timestamp order
-	sortByTimestamp(data)
 
 	return data, nil
 }
 
-// sortByTimestamp sorts market data by timestamp in ascending order
-func sortByTimestamp(data []repository.MarketData) {
-	// Simple bubble sort since data should be mostly sorted (only backfill + streaming mix)
-	n := len(data)
-	for i := 0; i < n-1; i++ {
-		for j := 0; j < n-i-1; j++ {
-			if data[j].Timestamp > data[j+1].Timestamp {
-				data[j], data[j+1] = data[j+1], data[j]
-			}
-		}
-	}
-}

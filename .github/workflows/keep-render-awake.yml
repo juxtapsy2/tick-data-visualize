@@ -1,0 +1,49 @@
+name: Keep Render Service Awake
+
+on:
+  # Run every 20 minutes
+  schedule:
+    - cron: '*/20 * * * *'  # Every 20 minutes
+
+  # Allow manual trigger from GitHub Actions tab
+  workflow_dispatch:
+
+jobs:
+  wake-up:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Wake up Render service
+        run: |
+          echo "🚀 Waking up Render service..."
+          echo "⏳ Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+
+          # Ping the liveness endpoint (lightweight, no DB checks)
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 90 \
+            https://tick-data-visualize.onrender.com/health/live)
+
+          if [ "$RESPONSE" -eq 200 ]; then
+            echo "✅ Service is awake! (HTTP $RESPONSE)"
+          else
+            echo "⚠️  Service responded with HTTP $RESPONSE"
+            exit 0  # Don't fail the workflow, service might be starting
+          fi
+
+      - name: Check health status (optional)
+        continue-on-error: true  # Don't fail if health check fails
+        run: |
+          echo ""
+          echo "🏥 Checking full health status..."
+
+          HEALTH_RESPONSE=$(curl -s --max-time 10 \
+            https://tick-data-visualize.onrender.com/health || echo '{"status":"timeout"}')
+
+          echo "$HEALTH_RESPONSE" | jq -r '
+            if .status == "healthy" then
+              "✅ PostgreSQL: \(.components.postgres.status) (\(.components.postgres.latency_ms)ms)\n✅ Redis: \(.components.redis.status) (\(.components.redis.latency_ms)ms)"
+            elif .status == "unhealthy" then
+              "⚠️  Service is unhealthy:\n\(.components | to_entries[] | "   \(.key): \(.value.status) - \(.value.message // "OK")")"
+            else
+              "⚠️  Health check timeout or unavailable"
+            end
+          ' || echo "⚠️  Could not parse health response"

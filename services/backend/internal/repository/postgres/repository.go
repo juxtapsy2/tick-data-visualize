@@ -273,47 +273,51 @@ func (r *Repository) GetLast15sAverages(ctx context.Context, indexTickers []stri
 		FROM requested r
 		-- LATERAL join for recent data (last 30 seconds)
 		LEFT JOIN LATERAL (
-			SELECT avg_last as avg_value
-			FROM index_tick_15s_cagg
-			WHERE ticker = r.ticker
-				AND bucket >= time_bucket('15 seconds', NOW()) - INTERVAL '30 seconds'
-				AND bucket <= time_bucket('15 seconds', NOW())
-				AND r.source = 'index'
-			ORDER BY bucket DESC
-			LIMIT 1
-
+			(
+				SELECT avg_last as avg_value
+				FROM index_tick_15s_cagg
+				WHERE ticker = r.ticker
+					AND bucket >= time_bucket('15 seconds', NOW()) - INTERVAL '30 seconds'
+					AND bucket <= time_bucket('15 seconds', NOW())
+					AND r.source = 'index'
+				ORDER BY bucket DESC
+				LIMIT 1
+			)
 			UNION ALL
-
-			SELECT avg_last as avg_value
-			FROM futures_15s_cagg
-			WHERE ticker = r.ticker
-				AND bucket >= time_bucket('15 seconds', NOW()) - INTERVAL '30 seconds'
-				AND bucket <= time_bucket('15 seconds', NOW())
-				AND r.source = 'futures'
-			ORDER BY bucket DESC
-			LIMIT 1
+			(
+				SELECT avg_last as avg_value
+				FROM futures_15s_cagg
+				WHERE ticker = r.ticker
+					AND bucket >= time_bucket('15 seconds', NOW()) - INTERVAL '30 seconds'
+					AND bucket <= time_bucket('15 seconds', NOW())
+					AND r.source = 'futures'
+				ORDER BY bucket DESC
+				LIMIT 1
+			)
 		) recent ON true
 		-- LATERAL join for fallback (last 1 hour) if no recent data
 		LEFT JOIN LATERAL (
-			SELECT avg_last as avg_value
-			FROM index_tick_15s_cagg
-			WHERE ticker = r.ticker
-				AND bucket > NOW() - INTERVAL '1 hour'
-				AND r.source = 'index'
-				AND recent.avg_value IS NULL  -- Only run if no recent data
-			ORDER BY bucket DESC
-			LIMIT 1
-
+			(
+				SELECT avg_last as avg_value
+				FROM index_tick_15s_cagg
+				WHERE ticker = r.ticker
+					AND bucket > NOW() - INTERVAL '1 hour'
+					AND r.source = 'index'
+					AND recent.avg_value IS NULL  -- Only run if no recent data
+				ORDER BY bucket DESC
+				LIMIT 1
+			)
 			UNION ALL
-
-			SELECT avg_last as avg_value
-			FROM futures_15s_cagg
-			WHERE ticker = r.ticker
-				AND bucket > NOW() - INTERVAL '1 hour'
-				AND r.source = 'futures'
-				AND recent.avg_value IS NULL  -- Only run if no recent data
-			ORDER BY bucket DESC
-			LIMIT 1
+			(
+				SELECT avg_last as avg_value
+				FROM futures_15s_cagg
+				WHERE ticker = r.ticker
+					AND bucket > NOW() - INTERVAL '1 hour'
+					AND r.source = 'futures'
+					AND recent.avg_value IS NULL  -- Only run if no recent data
+				ORDER BY bucket DESC
+				LIMIT 1
+			)
 		) fallback ON true
 		WHERE COALESCE(recent.avg_value, fallback.avg_value) IS NOT NULL;
 	`

@@ -360,9 +360,9 @@ func main() {
 			}
 
 			// Calculate target real time for this CSV data point
-			// Apply date offset to get today's timestamp
-			offsetMillis := int64(dateOffset) * 24 * 60 * 60 * 1000 // Convert days to milliseconds
-			targetTime := time.UnixMilli(currentTimestamp + offsetMillis)
+			// Apply date offset to get today's timestamp (same logic as bulk insert)
+			csvTimestamp := time.UnixMilli(currentTimestamp)
+			targetTime := csvTimestamp.Add(dateOffset)  // Correctly add Duration
 			currentRealTime := time.Now()
 
 			// If target time is in the future, wait until that time

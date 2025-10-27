@@ -912,16 +912,6 @@ func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *r
 			}).Info("first Redis stream entry")
 		}
 
-		// Use 0 for NULL values
-		vn30 := float64(0)
-		hnx := float64(0)
-		if vn30Value != nil {
-			vn30 = *vn30Value
-		}
-		if hnxValue != nil {
-			hnx = *hnxValue
-		}
-
 		// Write to Redis stream with explicit ID from historical timestamp
 		// Redis stream IDs are in milliseconds, our timestamp is in seconds
 		streamID := fmt.Sprintf("%d-0", timestamp*1000)
@@ -930,7 +920,6 @@ func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *r
 			ID:     streamID, // Use data timestamp as Stream ID for efficient filtering
 			MaxLen: 1200,     // Keep max 1200 entries (~5 hours of 15s intervals)
 			Approx: true,
-			ID:     streamID,
 			Values: map[string]interface{}{
 				"timestamp": timestamp, // Keep for easy reading
 				"vn30":      vn30Value,

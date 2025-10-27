@@ -31,11 +31,11 @@ type ComponentHealth struct {
 
 // HealthResponse represents the overall health response
 type HealthResponse struct {
-	Status     Status                      `json:"status"`
-	Version    string                      `json:"version"`
-	Uptime     time.Duration               `json:"uptime_seconds"`
+	Status     Status                     `json:"status"`
+	Version    string                     `json:"version"`
+	Uptime     time.Duration              `json:"uptime_seconds"`
 	Components map[string]ComponentHealth `json:"components"`
-	Timestamp  time.Time                   `json:"timestamp"`
+	Timestamp  time.Time                  `json:"timestamp"`
 }
 
 // Checker defines the interface for health checks
@@ -185,7 +185,7 @@ func (s *Service) LivenessHandler() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{
-			"status": "alive",
+			"status": "ohshitimalive",
 		})
 	}
 }

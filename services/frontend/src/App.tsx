@@ -26,32 +26,11 @@ function App() {
       console.log('Initializing MarketStreamService with host:', wsHost);
       serviceRef.current = new MarketStreamService(wsHost);
 
-      // Load historical data first
+      // Load historical data using smart defaults
+      // Backend automatically returns data from 9:00 AM Vietnam time to now
       try {
-        // Get current date in Vietnam timezone (UTC+7)
-        // We calculate Vietnam time by adding 7 hours to UTC
-        const now = new Date();
-        const vietnamTimeMs = now.getTime() + (7 * 60 * 60 * 1000);
-        const vietnamTime = new Date(vietnamTimeMs);
-
-        // Get today's date in Vietnam (use UTC methods to avoid local timezone)
-        const year = vietnamTime.getUTCFullYear();
-        const month = String(vietnamTime.getUTCMonth() + 1).padStart(2, '0');
-        const day = String(vietnamTime.getUTCDate()).padStart(2, '0');
-        const todayVietnam = `${year}-${month}-${day}`;
-
-        // Create start time: 9:00 AM Vietnam time
-        const startTimeVietnam = new Date(`${todayVietnam}T09:00:00+07:00`);
-        // Create end time: 2:45 PM Vietnam time
-        const endTimeVietnam = new Date(`${todayVietnam}T14:45:00+07:00`);
-
-        const startTime = startTimeVietnam.toISOString();
-        const endTime = endTimeVietnam.toISOString();
-        console.log(`Loading historical data (${todayVietnam} 9:00 AM - 2:45 PM Vietnam time)...`);
-        const historicalData = await serviceRef.current.getHistoricalData(
-          startTime,
-          endTime
-        );
+        console.log('Loading historical data (defaults: 9:00 AM Vietnam → now)...');
+        const historicalData = await serviceRef.current.getHistoricalData();
 
         if (historicalData.length > 0) {
           console.log('Loaded', historicalData.length, 'historical points');
@@ -154,7 +133,7 @@ function App() {
           <div className="stat-value vn30">{stats.latestVN30.toFixed(2)}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">41I1FA000</div>
+          <div className="stat-label">F1</div>
           <div className="stat-value hnx">{stats.latestHNX.toFixed(2)}</div>
         </div>
       </div>

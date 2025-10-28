@@ -114,8 +114,7 @@ func provideBroadcaster(repo repository.MarketRepository, cache repository.Cache
 }
 
 // isMarketOpen checks if Vietnam futures market is currently open
-// Vietnam futures market hours: 8:45 AM - 11:30 AM and 1:00 PM - 2:45 PM, Monday-Friday
-// ATO session: 8:45 AM - 8:59 AM
+// Vietnam futures market hours: 9:00 AM - 11:30 AM and 1:00 PM - 2:45 PM, Monday-Friday
 // Morning session: 9:00 AM - 11:30 AM
 // Lunch break: 11:30 AM - 1:00 PM
 // Afternoon session: 1:00 PM - 2:45 PM
@@ -131,8 +130,8 @@ func isMarketOpen() bool {
 	hour := now.Hour()
 	minute := now.Minute()
 
-	// ATO + Morning session: 8:45 AM - 11:29:59 AM
-	if (hour == 8 && minute >= 45) || (hour >= 9 && (hour < 11 || (hour == 11 && minute < 30))) {
+	// Morning session: 9:00 AM - 11:29:59 AM
+	if hour >= 9 && (hour < 11 || (hour == 11 && minute < 30)) {
 		return true
 	}
 

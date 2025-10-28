@@ -158,13 +158,13 @@ func main() {
 	currentSecond := now.Second()
 
 	// Determine if we should bulk insert historical data
-	// Bulk insert anytime from 8:45 AM onwards (ATO session for futures)
+	// Bulk insert anytime from 9:00 AM onwards
 	indexIdx := 0
 	futuresIdx := 0
 
-	if currentHour >= 9 || (currentHour == 8 && currentMinute >= 45) {
-		// Bulk insert data from 8:45 AM up to current time (or 14:45 if past market close)
-		log.Info("bulk inserting historical data from 8:45 AM (ATO session)")
+	if currentHour >= 9 {
+		// Bulk insert data from 9:00 AM up to current time (or 14:45 if past market close)
+		log.Info("bulk inserting historical data from 9:00 AM")
 
 		// Calculate target time in HH:MM:SS format
 		// Cap at 14:45 (market close time) if current time is past that
@@ -268,7 +268,7 @@ func main() {
 			log.Info("Redis stream backfill completed")
 		}
 	} else {
-		log.WithField("current_hour", currentHour).Info("before market hours (00:00-08:44) - skipping bulk insert, will wait for 8:45 AM")
+		log.WithField("current_hour", currentHour).Info("before market hours (00:00-08:59) - skipping bulk insert, will wait for 9:00 AM")
 	}
 
 	// Start real-time streaming
@@ -296,11 +296,10 @@ func main() {
 		default:
 			now := time.Now().In(vietnamLocation)
 			currentHour := now.Hour()
-			currentMinute := now.Minute()
 
 			// Determine if we should start a new session
-			if (currentHour >= 9 || (currentHour == 8 && currentMinute >= 45)) && currentHour < 15 && currentSession != "morning" {
-				// Start trading session (8:45 AM - before 3:00 PM)
+			if currentHour >= 9 && currentHour < 15 && currentSession != "morning" {
+				// Start trading session (9:00 AM - before 3:00 PM)
 				currentSession = "morning"
 				if indexIdx == 0 && futuresIdx == 0 {
 					// Only reset if we haven't bulk inserted
@@ -309,9 +308,9 @@ func main() {
 				}
 				sessionStarted = true
 				lastInsertTime = 0 // Reset timing on session start
-				log.Info("starting trading session (8:45 AM ATO - 2:45 PM)")
-			} else if (currentHour < 8 || (currentHour == 8 && currentMinute < 45)) || currentHour >= 15 {
-				// Before 8:45 AM or after 3:00 PM - end trading session
+				log.Info("starting trading session (9:00 AM - 2:45 PM)")
+			} else if currentHour < 9 || currentHour >= 15 {
+				// Before 9:00 AM or after 3:00 PM - end trading session
 				if sessionStarted {
 					log.WithFields(map[string]interface{}{
 						"current_hour":     currentHour,
@@ -369,20 +368,20 @@ func main() {
 			csvTimestamp := time.UnixMilli(currentTimestamp)
 			targetTime := csvTimestamp.Add(dateOffset) // Correctly add Duration
 
-			// Check if this CSV timestamp falls within market hours (8:45 AM - 2:45 PM Vietnam time)
+			// Check if this CSV timestamp falls within market hours (9:00 AM - 2:45 PM Vietnam time)
 			targetTimeVietnam := targetTime.In(vietnamLocation)
 			targetHour := targetTimeVietnam.Hour()
 			targetMinute := targetTimeVietnam.Minute()
 
-			// Market hours: 8:45 AM - 2:45 PM (14:45)
-			isWithinMarketHours := ((targetHour == 8 && targetMinute >= 45) || (targetHour >= 9 && targetHour < 14) || (targetHour == 14 && targetMinute <= 45))
+			// Market hours: 9:00 AM - 2:45 PM (14:45)
+			isWithinMarketHours := (targetHour >= 9 && targetHour < 14) || (targetHour == 14 && targetMinute <= 45)
 
 			if !isWithinMarketHours {
 				// Skip CSV data outside market hours
 				log.WithFields(map[string]interface{}{
 					"csv_time_vietnam": targetTimeVietnam.Format("15:04:05"),
 					"csv_timestamp":    currentTimestamp,
-				}).Debug("skipping CSV data outside market hours (before 8:45 AM or after 2:45 PM)")
+				}).Debug("skipping CSV data outside market hours (before 9:00 AM or after 2:45 PM)")
 
 				// Advance both indices to skip this timestamp
 				if indexIdx < len(indexRows) && indexRows[indexIdx].Timestamp == currentTimestamp {
@@ -849,8 +848,8 @@ func batchInsertFutures(ctx context.Context, pool *pgxpool.Pool, rows []FuturesR
 // backfillRedisStream queries PostgreSQL for 15-second aggregated data and writes to Redis stream
 // Uses the same query logic as GetHistoricalData() to ensure consistency
 func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *redis.Client, currentDate time.Time, log *logger.Logger) error {
-	// Query for aggregated data from 8:45 AM (ATO session) to current time
-	startOfDay := time.Date(currentDate.Year(), currentDate.Month(), currentDate.Day(), 1, 45, 0, 0, time.UTC) // 8:45 AM Vietnam = 01:45 UTC
+	// Query for aggregated data from 9:00 AM to current time
+	startOfDay := time.Date(currentDate.Year(), currentDate.Month(), currentDate.Day(), 2, 0, 0, 0, time.UTC) // 9:00 AM Vietnam = 02:00 UTC
 	endTime := time.Now().UTC()
 
 	// Same query as GetHistoricalData() in market-service/internal/repository/postgres/repository.go

@@ -11,9 +11,13 @@ import (
 
 // MarketDataMessage represents a market data update
 type MarketDataMessage struct {
-	Timestamp int64
-	VN30Value float64
-	HNXValue  float64
+	Timestamp      int64
+	VN30Value      float64
+	HNXValue       float64 // F1 futures last price
+	F1ForeignLong  float64 // F1 foreign buy volume
+	F1ForeignShort float64 // F1 foreign sell volume
+	F1TotalBid     float64 // F1 total bid (long orders)
+	F1TotalAsk     float64 // F1 total ask (short orders)
 }
 
 // StreamClient represents a connected client
@@ -92,7 +96,8 @@ func (b *Broadcaster) BroadcastMarketData(timestamp int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	data, err := b.repo.GetLatestData(ctx)
+	// Broadcaster always uses f1 for now (can be enhanced to broadcast multiple contracts later)
+	data, err := b.repo.GetLatestData(ctx, "f1")
 	if err != nil {
 		b.log.WithError(err).Debug("failed to get latest data from aggregate")
 		return
@@ -108,9 +113,13 @@ func (b *Broadcaster) BroadcastMarketData(timestamp int64) {
 	b.mu.Unlock()
 
 	msg := MarketDataMessage{
-		Timestamp: data.Timestamp,
-		VN30Value: data.VN30Value,
-		HNXValue:  data.HNXValue,
+		Timestamp:      data.Timestamp,
+		VN30Value:      data.VN30Value,
+		HNXValue:       data.HNXValue,
+		F1ForeignLong:  data.F1ForeignLong,
+		F1ForeignShort: data.F1ForeignShort,
+		F1TotalBid:     data.F1TotalBid,
+		F1TotalAsk:     data.F1TotalAsk,
 	}
 
 	// Broadcast to connected clients (synchronous, in-memory)
@@ -139,9 +148,13 @@ func (b *Broadcaster) asyncWriteToRedis(msg MarketDataMessage) {
 
 	// Convert to repository.MarketData
 	point := repository.MarketData{
-		Timestamp: msg.Timestamp,
-		VN30Value: msg.VN30Value,
-		HNXValue:  msg.HNXValue,
+		Timestamp:      msg.Timestamp,
+		VN30Value:      msg.VN30Value,
+		HNXValue:       msg.HNXValue,
+		F1ForeignLong:  msg.F1ForeignLong,
+		F1ForeignShort: msg.F1ForeignShort,
+		F1TotalBid:     msg.F1TotalBid,
+		F1TotalAsk:     msg.F1TotalAsk,
 	}
 
 	// Write to Redis Stream (non-blocking)

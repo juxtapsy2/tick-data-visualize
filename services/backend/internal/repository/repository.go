@@ -5,11 +5,15 @@ import (
 	"time"
 )
 
-// MarketData represents joined VN30 and HNX data
+// MarketData represents joined VN30 and F1 futures data with positions
 type MarketData struct {
-	Timestamp int64
-	VN30Value float64
-	HNXValue  float64
+	Timestamp      int64
+	VN30Value      float64
+	HNXValue       float64 // F1 futures last price
+	F1ForeignLong  float64 // F1 foreign buy volume (total_f_buy_vol)
+	F1ForeignShort float64 // F1 foreign sell volume (total_f_sell_vol)
+	F1TotalBid     float64 // F1 total bid (long orders)
+	F1TotalAsk     float64 // F1 total ask (short orders)
 }
 
 // ChartData represents aggregated data for a specific ticker
@@ -20,17 +24,17 @@ type ChartData struct {
 
 // MarketRepository defines the interface for market data operations
 type MarketRepository interface {
-	// GetHistoricalData retrieves market data for a time range
-	GetHistoricalData(ctx context.Context, startTime, endTime time.Time) ([]MarketData, error)
+	// GetHistoricalData retrieves market data for a time range with specified futures contract (f1, f2, f3, f4)
+	GetHistoricalData(ctx context.Context, startTime, endTime time.Time, futuresContract string) ([]MarketData, error)
 
-	// GetLatestData retrieves the most recent market data point
-	GetLatestData(ctx context.Context) (*MarketData, error)
+	// GetLatestData retrieves the most recent market data point for specified futures contract
+	GetLatestData(ctx context.Context, futuresContract string) (*MarketData, error)
 
-	// GetDataAtTimestamp retrieves market data for a specific timestamp (15s bucket)
-	GetDataAtTimestamp(ctx context.Context, timestamp int64) (*MarketData, error)
+	// GetDataAtTimestamp retrieves market data for a specific timestamp (15s bucket) with specified futures contract
+	GetDataAtTimestamp(ctx context.Context, timestamp int64, futuresContract string) (*MarketData, error)
 
-	// GetDataAfterTimestamp retrieves data after a specific timestamp
-	GetDataAfterTimestamp(ctx context.Context, afterTimestamp int64) ([]MarketData, error)
+	// GetDataAfterTimestamp retrieves data after a specific timestamp for specified futures contract
+	GetDataAfterTimestamp(ctx context.Context, afterTimestamp int64, futuresContract string) ([]MarketData, error)
 
 	// GetLast15sAverages retrieves AVG of last 15 seconds for multiple tickers
 	GetLast15sAverages(ctx context.Context, indexTickers []string, futuresTickers []string) ([]ChartData, error)

@@ -113,9 +113,12 @@ func provideBroadcaster(repo repository.MarketRepository, cache repository.Cache
 	return server.NewBroadcaster(repo, cache, log)
 }
 
-// isMarketOpen checks if Vietnam stock market is currently open
-// Vietnam market hours: 9:00 AM - 11:30 AM and 1:00 PM - 3:00 PM, Monday-Friday
+// isMarketOpen checks if Vietnam futures market is currently open
+// Vietnam futures market hours: 8:45 AM - 11:30 AM and 1:00 PM - 2:45 PM, Monday-Friday
+// ATO session: 8:45 AM - 8:59 AM
+// Morning session: 9:00 AM - 11:30 AM
 // Lunch break: 11:30 AM - 1:00 PM
+// Afternoon session: 1:00 PM - 2:45 PM
 func isMarketOpen() bool {
 	vietnamLocation, _ := time.LoadLocation("Asia/Bangkok")
 	now := time.Now().In(vietnamLocation)
@@ -128,13 +131,13 @@ func isMarketOpen() bool {
 	hour := now.Hour()
 	minute := now.Minute()
 
-	// Morning session: 9:00 AM - 11:29:59 AM
-	if hour >= 9 && (hour < 11 || (hour == 11 && minute < 30)) {
+	// ATO + Morning session: 8:45 AM - 11:29:59 AM
+	if (hour == 8 && minute >= 45) || (hour >= 9 && (hour < 11 || (hour == 11 && minute < 30))) {
 		return true
 	}
 
-	// Afternoon session: 1:00 PM - 2:59:59 PM
-	if hour >= 13 && hour < 15 {
+	// Afternoon session: 1:00 PM - 2:45:59 PM
+	if hour == 13 || (hour == 14 && minute <= 45) {
 		return true
 	}
 
@@ -269,10 +272,6 @@ func registerLifecycleHooks(lc fx.Lifecycle, log *logger.Logger, broadcaster *se
 				broadcastTicker = time.NewTicker(15 * time.Second)
 				defer broadcastTicker.Stop()
 
-				// Define tickers to query
-				indexTickers := []string{"VN30"}
-				futuresTickers := []string{"f1"}
-
 				// Immediately query on alignment (don't wait for first tick)
 				func() {
 					if !isMarketOpen() {
@@ -283,15 +282,23 @@ func registerLifecycleHooks(lc fx.Lifecycle, log *logger.Logger, broadcaster *se
 					queryCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
 
-					chartData, err := repo.GetLast15sAverages(queryCtx, indexTickers, futuresTickers)
+					data, err := repo.GetLatestData(queryCtx, "f1")
 					if err != nil {
-						log.WithError(err).Error("failed to get 15s averages")
+						log.WithError(err).Error("failed to get latest data")
 						return
 					}
 
-					broadcaster.BroadcastChartData(chartData)
+					msg := server.MarketDataMessage{
+						Timestamp:      data.Timestamp,
+						VN30Value:      data.VN30Value,
+						HNXValue:       data.HNXValue,
+						F1ForeignLong:  data.F1ForeignLong,
+						F1ForeignShort: data.F1ForeignShort,
+						F1TotalBid:     data.F1TotalBid,
+						F1TotalAsk:     data.F1TotalAsk,
+					}
+					broadcaster.BroadcastComplete(msg)
 					log.WithFields(map[string]interface{}{
-						"charts":  len(chartData),
 						"clients": broadcaster.GetActiveClientsCount(),
 					}).Info("initial broadcast completed (aligned)")
 				}()
@@ -308,20 +315,28 @@ func registerLifecycleHooks(lc fx.Lifecycle, log *logger.Logger, broadcaster *se
 						// Create query context with timeout
 						queryCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
-						// Query last 15 seconds averages
-						chartData, err := repo.GetLast15sAverages(queryCtx, indexTickers, futuresTickers)
+						// Query latest data with all fields
+						data, err := repo.GetLatestData(queryCtx, "f1")
 						cancel()
 
 						if err != nil {
-							log.WithError(err).Error("failed to get 15s averages")
+							log.WithError(err).Error("failed to get latest data")
 							continue
 						}
 
-						// Broadcast to all WebSocket clients
-						broadcaster.BroadcastChartData(chartData)
+						// Broadcast to all WebSocket clients with all fields
+						msg := server.MarketDataMessage{
+							Timestamp:      data.Timestamp,
+							VN30Value:      data.VN30Value,
+							HNXValue:       data.HNXValue,
+							F1ForeignLong:  data.F1ForeignLong,
+							F1ForeignShort: data.F1ForeignShort,
+							F1TotalBid:     data.F1TotalBid,
+							F1TotalAsk:     data.F1TotalAsk,
+						}
+						broadcaster.BroadcastComplete(msg)
 
 						log.WithFields(map[string]interface{}{
-							"charts":  len(chartData),
 							"clients": broadcaster.GetActiveClientsCount(),
 						}).Info("broadcast completed")
 

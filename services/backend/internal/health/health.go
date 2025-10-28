@@ -209,8 +209,8 @@ func (c *PostgresChecker) Name() string {
 func (c *PostgresChecker) Check(ctx context.Context) ComponentHealth {
 	start := time.Now()
 
-	// Try to get latest data
-	_, err := c.repo.GetLatestData(ctx)
+	// Try to get latest data (use f1 for health check)
+	_, err := c.repo.GetLatestData(ctx, "f1")
 	latency := time.Since(start)
 
 	if err != nil {

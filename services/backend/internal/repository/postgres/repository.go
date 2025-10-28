@@ -47,8 +47,12 @@ func NewRepository(ctx context.Context, dbURL string, cfg *config.MarketConfig, 
 }
 
 // GetHistoricalData retrieves market data for a time range with forward fill
-// Queries base tables with time_bucket and uses window functions to forward fill missing data
-func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime time.Time) ([]repository.MarketData, error) {
+// Queries continuous aggregates and uses subqueries to forward fill missing data
+func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime time.Time, futuresContract string) ([]repository.MarketData, error) {
+	// Default to f1 if not specified
+	if futuresContract == "" {
+		futuresContract = "f1"
+	}
 	// Query with forward fill logic:
 	// 1. Generate complete time series at 15-second intervals
 	// 2. Aggregate actual data into 15-second buckets
@@ -71,29 +75,35 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 			AND NOT (EXTRACT(HOUR FROM ts AT TIME ZONE 'Asia/Ho_Chi_Minh') = 12)
 		),
 		vn30_buckets AS (
-			-- Aggregate VN30 data into 15-second buckets
+			-- Query pre-computed continuous aggregate for VN30 data
 			SELECT
-				time_bucket('15 seconds', ts) AS bucket,
-				AVG(last) as value
-			FROM index_tick
-			WHERE ticker = 'VN30' AND ts >= $1 AND ts <= $2 AND last IS NOT NULL
-			GROUP BY bucket
+				bucket,
+				avg_last as value
+			FROM index_tick_15s_cagg
+			WHERE ticker = 'VN30' AND bucket >= $1 AND bucket <= $2
 		),
 		futures_buckets AS (
-			-- Aggregate futures data into 15-second buckets
+			-- Query pre-computed continuous aggregate for futures data
 			SELECT
-				time_bucket('15 seconds', ts) AS bucket,
-				AVG(last) as value
-			FROM futures_table
-			WHERE f = 'f1' AND ts >= $1 AND ts <= $2 AND last IS NOT NULL
-			GROUP BY bucket
+				bucket,
+				avg_last as value,
+				avg_total_f_buy_vol as foreign_long,
+				avg_total_f_sell_vol as foreign_short,
+				avg_total_bid as total_bid,
+				avg_total_ask as total_ask
+			FROM futures_15s_cagg
+			WHERE f = $3 AND bucket >= $1 AND bucket <= $2
 		),
 		joined_data AS (
 			-- Join time series with actual data
 			SELECT
 				t.bucket,
 				v.value as vn30_raw,
-				f.value as hnx_raw
+				f.value as hnx_raw,
+				f.foreign_long as foreign_long_raw,
+				f.foreign_short as foreign_short_raw,
+				f.total_bid as total_bid_raw,
+				f.total_ask as total_ask_raw
 			FROM time_series t
 			LEFT JOIN vn30_buckets v ON t.bucket = v.bucket
 			LEFT JOIN futures_buckets f ON t.bucket = f.bucket
@@ -108,13 +118,12 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 				COALESCE(
 					vn30_raw,
 					(
-						SELECT AVG(last)
-						FROM index_tick
+						SELECT avg_last
+						FROM index_tick_15s_cagg
 						WHERE ticker = 'VN30'
-							AND ts <= joined_data.bucket
-							AND last IS NOT NULL
-						GROUP BY time_bucket('15 seconds', ts)
-						ORDER BY time_bucket('15 seconds', ts) DESC
+							AND bucket <= joined_data.bucket
+							AND avg_last IS NOT NULL
+						ORDER BY bucket DESC
 						LIMIT 1
 					)
 				) as vn30_filled,
@@ -122,28 +131,83 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 				COALESCE(
 					hnx_raw,
 					(
-						SELECT AVG(last)
-						FROM futures_table
-						WHERE f = 'f1'
-							AND ts <= joined_data.bucket
-							AND last IS NOT NULL
-						GROUP BY time_bucket('15 seconds', ts)
-						ORDER BY time_bucket('15 seconds', ts) DESC
+						SELECT avg_last
+						FROM futures_15s_cagg
+						WHERE f = $3
+							AND bucket <= joined_data.bucket
+							AND avg_last IS NOT NULL
+						ORDER BY bucket DESC
 						LIMIT 1
 					)
-				) as hnx_filled
+				) as hnx_filled,
+				-- Forward fill Foreign Long
+				COALESCE(
+					foreign_long_raw,
+					(
+						SELECT avg_total_f_buy_vol
+						FROM futures_15s_cagg
+						WHERE f = $3
+							AND bucket <= joined_data.bucket
+							AND avg_total_f_buy_vol IS NOT NULL
+						ORDER BY bucket DESC
+						LIMIT 1
+					)
+				) as foreign_long_filled,
+				-- Forward fill Foreign Short
+				COALESCE(
+					foreign_short_raw,
+					(
+						SELECT avg_total_f_sell_vol
+						FROM futures_15s_cagg
+						WHERE f = $3
+							AND bucket <= joined_data.bucket
+							AND avg_total_f_sell_vol IS NOT NULL
+						ORDER BY bucket DESC
+						LIMIT 1
+					)
+				) as foreign_short_filled,
+				-- Forward fill Total Bid
+				COALESCE(
+					total_bid_raw,
+					(
+						SELECT avg_total_bid
+						FROM futures_15s_cagg
+						WHERE f = $3
+							AND bucket <= joined_data.bucket
+							AND avg_total_bid IS NOT NULL
+						ORDER BY bucket DESC
+						LIMIT 1
+					)
+				) as total_bid_filled,
+				-- Forward fill Total Ask
+				COALESCE(
+					total_ask_raw,
+					(
+						SELECT avg_total_ask
+						FROM futures_15s_cagg
+						WHERE f = $3
+							AND bucket <= joined_data.bucket
+							AND avg_total_ask IS NOT NULL
+						ORDER BY bucket DESC
+						LIMIT 1
+					)
+				) as total_ask_filled
 			FROM joined_data
 		)
 		SELECT
 			EXTRACT(EPOCH FROM bucket)::bigint as timestamp,
 			vn30_filled as vn30_value,
-			hnx_filled as hnx_value
+			hnx_filled as hnx_value,
+			foreign_long_filled as foreign_long_value,
+			foreign_short_filled as foreign_short_value,
+			total_bid_filled as total_bid_value,
+			total_ask_filled as total_ask_value
 		FROM forward_filled
 		WHERE vn30_filled IS NOT NULL OR hnx_filled IS NOT NULL
 		ORDER BY bucket;
 	`
 
-	rows, err := r.pool.Query(ctx, query, startTime, endTime)
+	rows, err := r.pool.Query(ctx, query, startTime, endTime, futuresContract)
 	if err != nil {
 		r.log.WithError(err).Error("failed to query historical data")
 		return nil, fmt.Errorf("query error: %w", err)
@@ -153,9 +217,9 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 	var results []repository.MarketData
 	for rows.Next() {
 		var data repository.MarketData
-		var vn30Val, hnxVal *float64
+		var vn30Val, hnxVal, foreignLongVal, foreignShortVal, totalBidVal, totalAskVal *float64
 
-		if err := rows.Scan(&data.Timestamp, &vn30Val, &hnxVal); err != nil {
+		if err := rows.Scan(&data.Timestamp, &vn30Val, &hnxVal, &foreignLongVal, &foreignShortVal, &totalBidVal, &totalAskVal); err != nil {
 			r.log.WithError(err).Error("failed to scan row")
 			return nil, fmt.Errorf("scan error: %w", err)
 		}
@@ -166,6 +230,18 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 		}
 		if hnxVal != nil {
 			data.HNXValue = *hnxVal
+		}
+		if foreignLongVal != nil {
+			data.F1ForeignLong = *foreignLongVal
+		}
+		if foreignShortVal != nil {
+			data.F1ForeignShort = *foreignShortVal
+		}
+		if totalBidVal != nil {
+			data.F1TotalBid = *totalBidVal
+		}
+		if totalAskVal != nil {
+			data.F1TotalAsk = *totalAskVal
 		}
 
 		results = append(results, data)
@@ -180,33 +256,75 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 }
 
 // GetLatestData retrieves the most recent market data point
-// Uses GetLast15sAverages to get latest averages from base tables
-func (r *Repository) GetLatestData(ctx context.Context) (*repository.MarketData, error) {
-	// Reuse the GetLast15sAverages method
-	chartData, err := r.GetLast15sAverages(ctx, []string{"VN30"}, []string{"f1"})
+// Queries continuous aggregates directly for all fields including foreign positions and order book
+func (r *Repository) GetLatestData(ctx context.Context, futuresContract string) (*repository.MarketData, error) {
+	// Default to f1 if not specified
+	if futuresContract == "" {
+		futuresContract = "f1"
+	}
+
+	// Query continuous aggregates for latest data with all fields
+	query := `
+		WITH vn30_latest AS (
+			SELECT
+				EXTRACT(EPOCH FROM bucket)::bigint as timestamp,
+				avg_last as vn30_value
+			FROM index_tick_15s_cagg
+			WHERE ticker = 'VN30'
+				AND bucket >= time_bucket('15 seconds', NOW()) - INTERVAL '1 hour'
+			ORDER BY bucket DESC
+			LIMIT 1
+		),
+		futures_latest AS (
+			SELECT
+				EXTRACT(EPOCH FROM bucket)::bigint as timestamp,
+				avg_last as hnx_value,
+				avg_total_f_buy_vol as foreign_long,
+				avg_total_f_sell_vol as foreign_short,
+				avg_total_bid as total_bid,
+				avg_total_ask as total_ask
+			FROM futures_15s_cagg
+			WHERE f = $1
+				AND bucket >= time_bucket('15 seconds', NOW()) - INTERVAL '1 hour'
+			ORDER BY bucket DESC
+			LIMIT 1
+		)
+		SELECT
+			GREATEST(v.timestamp, f.timestamp) as timestamp,
+			COALESCE(v.vn30_value, 0) as vn30_value,
+			COALESCE(f.hnx_value, 0) as hnx_value,
+			COALESCE(f.foreign_long, 0) as foreign_long,
+			COALESCE(f.foreign_short, 0) as foreign_short,
+			COALESCE(f.total_bid, 0) as total_bid,
+			COALESCE(f.total_ask, 0) as total_ask
+		FROM vn30_latest v
+		FULL OUTER JOIN futures_latest f ON true;
+	`
+
+	var data repository.MarketData
+	err := r.pool.QueryRow(ctx, query, futuresContract).Scan(
+		&data.Timestamp,
+		&data.VN30Value,
+		&data.HNXValue,
+		&data.F1ForeignLong,
+		&data.F1ForeignShort,
+		&data.F1TotalBid,
+		&data.F1TotalAsk,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get latest averages: %w", err)
+		r.log.WithError(err).Debug("failed to get latest data from continuous aggregates")
+		return nil, fmt.Errorf("query error: %w", err)
 	}
 
-	// Convert ChartData to MarketData
-	data := &repository.MarketData{
-		Timestamp: time.Now().Unix(),
-	}
-
-	for _, chart := range chartData {
-		switch chart.Ticker {
-		case "VN30":
-			data.VN30Value = chart.Value
-		case "f1":
-			data.HNXValue = chart.Value
-		}
-	}
-
-	return data, nil
+	return &data, nil
 }
 
 // GetDataAtTimestamp retrieves market data for a specific 15s bucket
-func (r *Repository) GetDataAtTimestamp(ctx context.Context, timestamp int64) (*repository.MarketData, error) {
+func (r *Repository) GetDataAtTimestamp(ctx context.Context, timestamp int64, futuresContract string) (*repository.MarketData, error) {
+	// Default to f1 if not specified
+	if futuresContract == "" {
+		futuresContract = "f1"
+	}
 	// Round timestamp to nearest 15s bucket
 	bucketTimestamp := (timestamp / 15) * 15
 
@@ -231,7 +349,11 @@ func (r *Repository) GetDataAtTimestamp(ctx context.Context, timestamp int64) (*
 }
 
 // GetDataAfterTimestamp retrieves data after a specific timestamp
-func (r *Repository) GetDataAfterTimestamp(ctx context.Context, afterTimestamp int64) ([]repository.MarketData, error) {
+func (r *Repository) GetDataAfterTimestamp(ctx context.Context, afterTimestamp int64, futuresContract string) ([]repository.MarketData, error) {
+	// Default to f1 if not specified
+	if futuresContract == "" {
+		futuresContract = "f1"
+	}
 	startTime := time.Unix(afterTimestamp, 0)
 	endTime := time.Now()
 
@@ -240,7 +362,7 @@ func (r *Repository) GetDataAfterTimestamp(ctx context.Context, afterTimestamp i
 		"to":   endTime,
 	}).Debug("fetching data after timestamp")
 
-	return r.GetHistoricalData(ctx, startTime, endTime)
+	return r.GetHistoricalData(ctx, startTime, endTime, futuresContract)
 }
 
 // Close closes the database connection pool

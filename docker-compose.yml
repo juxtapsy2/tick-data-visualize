@@ -7,7 +7,7 @@ services:
     volumes:
       - redis_data:/data
     ports:
-      - "6379:6379"
+      - "6388:6379"  # Use 6380 on host to avoid conflict with Django backend's Redis
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -30,7 +30,7 @@ services:
 
       # Database (connects to external TimescaleDB)
       MARKET_DATABASE_HOST: ${MARKET_DATABASE_HOST:-host.docker.internal}
-      MARKET_DATABASE_PORT: ${MARKET_DATABASE_PORT:-5433}
+      MARKET_DATABASE_PORT: ${MARKET_DATABASE_PORT:-5432}
       MARKET_DATABASE_USER: ${MARKET_DATABASE_USER:-market_user}
       MARKET_DATABASE_PASSWORD: ${MARKET_DATABASE_PASSWORD:-market_password}
       MARKET_DATABASE_DATABASE: ${MARKET_DATABASE_DATABASE:-trading_db}
@@ -82,7 +82,7 @@ services:
     environment:
       # Database (connects to external TimescaleDB)
       MARKET_DATABASE_HOST: ${MARKET_DATABASE_HOST:-host.docker.internal}
-      MARKET_DATABASE_PORT: ${MARKET_DATABASE_PORT:-5433}
+      MARKET_DATABASE_PORT: ${MARKET_DATABASE_PORT:-5432}
       MARKET_DATABASE_USER: ${MARKET_DATABASE_USER:-market_user}
       MARKET_DATABASE_PASSWORD: ${MARKET_DATABASE_PASSWORD:-market_password}
       MARKET_DATABASE_DATABASE: ${MARKET_DATABASE_DATABASE:-trading_db}

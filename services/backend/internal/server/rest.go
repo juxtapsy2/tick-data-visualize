@@ -65,6 +65,10 @@ func (h *RESTHandler) HandleHistorical(w http.ResponseWriter, r *http.Request) {
 	// Parse query parameters
 	fromParam := r.URL.Query().Get("from")
 	toParam := r.URL.Query().Get("to")
+	futuresContract := r.URL.Query().Get("futures")
+	if futuresContract == "" {
+		futuresContract = "f1" // Default to f1
+	}
 
 	var fromTime, toTime time.Time
 	var err error
@@ -150,7 +154,7 @@ func (h *RESTHandler) HandleHistorical(w http.ResponseWriter, r *http.Request) {
 
 	// Fallback to PostgreSQL if Redis has no data or failed
 	if !fromCache {
-		data, err = h.repo.GetHistoricalData(ctx, fromTime, toTime)
+		data, err = h.repo.GetHistoricalData(ctx, fromTime, toTime, futuresContract)
 		if err != nil {
 			h.log.WithError(err).Error("failed to get historical data from PostgreSQL")
 			h.sendError(w, "database error", http.StatusInternalServerError)
@@ -182,9 +186,15 @@ func (h *RESTHandler) HandleLatest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse query parameter
+	futuresContract := r.URL.Query().Get("futures")
+	if futuresContract == "" {
+		futuresContract = "f1" // Default to f1
+	}
+
 	// Query database
 	ctx := r.Context()
-	data, err := h.repo.GetLatestData(ctx)
+	data, err := h.repo.GetLatestData(ctx, futuresContract)
 	if err != nil {
 		h.log.WithError(err).Error("failed to get latest data")
 		h.sendError(w, "database error", http.StatusInternalServerError)

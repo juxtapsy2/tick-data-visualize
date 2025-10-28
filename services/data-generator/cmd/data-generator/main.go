@@ -32,17 +32,21 @@ type IndexTickRow struct {
 }
 
 type FuturesRow struct {
-	FormattedTime string
-	Session       string
-	Ticker        string
-	F             string
-	Last          *float64
-	Change        *float64
-	PctChange     *float64
-	TotalVol      *float64
-	TotalVal      *float64
-	Timestamp     int64
-	Category      string
+	FormattedTime  string
+	Session        string
+	Ticker         string
+	F              string
+	Last           *float64
+	Change         *float64
+	PctChange      *float64
+	TotalVol       *float64
+	TotalVal       *float64
+	TotalFBuyVol   *float64 // total_f_buy_vol
+	TotalFSellVol  *float64 // total_f_sell_vol
+	TotalBid       *float64 // total_bid
+	TotalAsk       *float64 // total_ask
+	Timestamp      int64
+	Category       string
 }
 
 func main() {
@@ -154,13 +158,13 @@ func main() {
 	currentSecond := now.Second()
 
 	// Determine if we should bulk insert historical data
-	// Bulk insert anytime from 9:00 AM onwards (but not during overnight 0:00-8:59 AM)
+	// Bulk insert anytime from 8:45 AM onwards (ATO session for futures)
 	indexIdx := 0
 	futuresIdx := 0
 
-	if currentHour >= 9 {
-		// Bulk insert data from 9:00 AM up to current time (or 14:45 if past market close)
-		log.Info("bulk inserting historical data from 9:00 AM")
+	if currentHour >= 9 || (currentHour == 8 && currentMinute >= 45) {
+		// Bulk insert data from 8:45 AM up to current time (or 14:45 if past market close)
+		log.Info("bulk inserting historical data from 8:45 AM (ATO session)")
 
 		// Calculate target time in HH:MM:SS format
 		// Cap at 14:45 (market close time) if current time is past that
@@ -264,7 +268,7 @@ func main() {
 			log.Info("Redis stream backfill completed")
 		}
 	} else {
-		log.WithField("current_hour", currentHour).Info("overnight hours (00:00-08:59) - skipping bulk insert, will wait for 9:00 AM")
+		log.WithField("current_hour", currentHour).Info("before market hours (00:00-08:44) - skipping bulk insert, will wait for 8:45 AM")
 	}
 
 	// Start real-time streaming
@@ -292,10 +296,11 @@ func main() {
 		default:
 			now := time.Now().In(vietnamLocation)
 			currentHour := now.Hour()
+			currentMinute := now.Minute()
 
 			// Determine if we should start a new session
-			if currentHour >= 9 && currentHour < 15 && currentSession != "morning" {
-				// Start morning session (9:00 AM - before 3:00 PM)
+			if (currentHour >= 9 || (currentHour == 8 && currentMinute >= 45)) && currentHour < 15 && currentSession != "morning" {
+				// Start trading session (8:45 AM - before 3:00 PM)
 				currentSession = "morning"
 				if indexIdx == 0 && futuresIdx == 0 {
 					// Only reset if we haven't bulk inserted
@@ -304,9 +309,9 @@ func main() {
 				}
 				sessionStarted = true
 				lastInsertTime = 0 // Reset timing on session start
-				log.Info("starting morning session (9:00 AM - 2:45 PM)")
-			} else if currentHour < 9 || currentHour >= 15 {
-				// Before 9:00 AM or after 3:00 PM - end trading session
+				log.Info("starting trading session (8:45 AM ATO - 2:45 PM)")
+			} else if (currentHour < 8 || (currentHour == 8 && currentMinute < 45)) || currentHour >= 15 {
+				// Before 8:45 AM or after 3:00 PM - end trading session
 				if sessionStarted {
 					log.WithFields(map[string]interface{}{
 						"current_hour":     currentHour,
@@ -363,6 +368,36 @@ func main() {
 			// Apply date offset to get today's timestamp (same logic as bulk insert)
 			csvTimestamp := time.UnixMilli(currentTimestamp)
 			targetTime := csvTimestamp.Add(dateOffset) // Correctly add Duration
+
+			// Check if this CSV timestamp falls within market hours (8:45 AM - 2:45 PM Vietnam time)
+			targetTimeVietnam := targetTime.In(vietnamLocation)
+			targetHour := targetTimeVietnam.Hour()
+			targetMinute := targetTimeVietnam.Minute()
+
+			// Market hours: 8:45 AM - 2:45 PM (14:45)
+			isWithinMarketHours := ((targetHour == 8 && targetMinute >= 45) || (targetHour >= 9 && targetHour < 14) || (targetHour == 14 && targetMinute <= 45))
+
+			if !isWithinMarketHours {
+				// Skip CSV data outside market hours
+				log.WithFields(map[string]interface{}{
+					"csv_time_vietnam": targetTimeVietnam.Format("15:04:05"),
+					"csv_timestamp":    currentTimestamp,
+				}).Debug("skipping CSV data outside market hours (before 8:45 AM or after 2:45 PM)")
+
+				// Advance both indices to skip this timestamp
+				if indexIdx < len(indexRows) && indexRows[indexIdx].Timestamp == currentTimestamp {
+					for indexIdx < len(indexRows) && indexRows[indexIdx].Timestamp == currentTimestamp {
+						indexIdx++
+					}
+				}
+				if futuresIdx < len(futuresRows) && futuresRows[futuresIdx].Timestamp == currentTimestamp {
+					for futuresIdx < len(futuresRows) && futuresRows[futuresIdx].Timestamp == currentTimestamp {
+						futuresIdx++
+					}
+				}
+				continue
+			}
+
 			currentRealTime := time.Now()
 
 			// If target time is in the future, wait until that time
@@ -600,6 +635,18 @@ func readFuturesCSV(filePath string, log *logger.Logger) ([]FuturesRow, error) {
 		if val, err := strconv.ParseFloat(record[colMap["total_val"]], 64); err == nil {
 			row.TotalVal = &val
 		}
+		if val, err := strconv.ParseFloat(record[colMap["total_f_buy_vol"]], 64); err == nil {
+			row.TotalFBuyVol = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["total_f_sell_vol"]], 64); err == nil {
+			row.TotalFSellVol = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["total_bid"]], 64); err == nil {
+			row.TotalBid = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["total_ask"]], 64); err == nil {
+			row.TotalAsk = &val
+		}
 
 		row.Category = record[colMap["category"]]
 
@@ -653,11 +700,15 @@ func insertFutures(ctx context.Context, pool *pgxpool.Pool, row FuturesRow, time
 	query := `
 		INSERT INTO futures_table (
 			ts, timestamp, formatted_time, session, ticker, f,
-			last, change, pct_change, total_vol, total_val, category
+			last, change, pct_change, total_vol, total_val,
+			total_f_buy_vol, total_f_sell_vol, total_bid, total_ask,
+			category
 		)
 		VALUES (
 			$1, $2, $3, $4, $5, $6,
-			$7, $8, $9, $10, $11, $12
+			$7, $8, $9, $10, $11,
+			$12, $13, $14, $15,
+			$16
 		)
 	`
 
@@ -673,6 +724,10 @@ func insertFutures(ctx context.Context, pool *pgxpool.Pool, row FuturesRow, time
 		row.PctChange,
 		row.TotalVol,
 		row.TotalVal,
+		row.TotalFBuyVol,
+		row.TotalFSellVol,
+		row.TotalBid,
+		row.TotalAsk,
 		row.Category,
 	)
 
@@ -745,16 +800,17 @@ func batchInsertFutures(ctx context.Context, pool *pgxpool.Pool, rows []FuturesR
 
 	// Build multi-row INSERT statement
 	valueStrings := make([]string, 0, len(rows))
-	valueArgs := make([]interface{}, 0, len(rows)*12)
+	valueArgs := make([]interface{}, 0, len(rows)*16)
 
 	for i, row := range rows {
 		csvTimestamp := time.UnixMilli(row.Timestamp).UTC()
 		shiftedTimestamp := csvTimestamp.Add(timeOffset)
 
 		valueStrings = append(valueStrings, fmt.Sprintf(
-			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
-			i*12+1, i*12+2, i*12+3, i*12+4, i*12+5, i*12+6,
-			i*12+7, i*12+8, i*12+9, i*12+10, i*12+11, i*12+12,
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			i*16+1, i*16+2, i*16+3, i*16+4, i*16+5, i*16+6,
+			i*16+7, i*16+8, i*16+9, i*16+10, i*16+11, i*16+12,
+			i*16+13, i*16+14, i*16+15, i*16+16,
 		))
 
 		valueArgs = append(valueArgs,
@@ -769,6 +825,10 @@ func batchInsertFutures(ctx context.Context, pool *pgxpool.Pool, rows []FuturesR
 			row.PctChange,
 			row.TotalVol,
 			row.TotalVal,
+			row.TotalFBuyVol,
+			row.TotalFSellVol,
+			row.TotalBid,
+			row.TotalAsk,
 			row.Category,
 		)
 	}
@@ -776,7 +836,9 @@ func batchInsertFutures(ctx context.Context, pool *pgxpool.Pool, rows []FuturesR
 	query := fmt.Sprintf(`
 		INSERT INTO futures_table (
 			ts, timestamp, formatted_time, session, ticker,
-			f, last, change, pct_change, total_vol, total_val, category
+			f, last, change, pct_change, total_vol, total_val,
+			total_f_buy_vol, total_f_sell_vol, total_bid, total_ask,
+			category
 		) VALUES %s
 	`, strings.Join(valueStrings, ","))
 
@@ -787,8 +849,8 @@ func batchInsertFutures(ctx context.Context, pool *pgxpool.Pool, rows []FuturesR
 // backfillRedisStream queries PostgreSQL for 15-second aggregated data and writes to Redis stream
 // Uses the same query logic as GetHistoricalData() to ensure consistency
 func backfillRedisStream(ctx context.Context, pool *pgxpool.Pool, redisClient *redis.Client, currentDate time.Time, log *logger.Logger) error {
-	// Query for aggregated data from 9:00 AM to current time
-	startOfDay := time.Date(currentDate.Year(), currentDate.Month(), currentDate.Day(), 2, 0, 0, 0, time.UTC) // 9:00 AM Vietnam = 02:00 UTC
+	// Query for aggregated data from 8:45 AM (ATO session) to current time
+	startOfDay := time.Date(currentDate.Year(), currentDate.Month(), currentDate.Day(), 1, 45, 0, 0, time.UTC) // 8:45 AM Vietnam = 01:45 UTC
 	endTime := time.Now().UTC()
 
 	// Same query as GetHistoricalData() in market-service/internal/repository/postgres/repository.go

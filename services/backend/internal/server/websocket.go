@@ -22,12 +22,18 @@ type WebSocketServer struct {
 
 // WebSocketMessage represents a message sent/received over WebSocket
 type WebSocketMessage struct {
-	Type      string  `json:"type"`      // "subscribe", "historical", "data", "error"
-	Timestamp int64   `json:"timestamp"` // For data messages
-	VN30Value float64 `json:"vn30"`      // For data messages
-	HNXValue  float64 `json:"hnx"`       // For data messages
-	Date      string  `json:"date"`      // For historical requests
-	Error     string  `json:"error"`     // For error messages
+	Type            string  `json:"type"`               // "subscribe", "historical", "data", "error"
+	Timestamp       int64   `json:"timestamp"`          // For data messages
+	VN30Value       float64 `json:"vn30"`               // VN30 index value
+	HNXValue        float64 `json:"hnx"`                // F1 futures last price (legacy field name)
+	F1Last          float64 `json:"f1_last"`            // F1 futures last price
+	F1ForeignLong   float64 `json:"f1_foreign_long"`    // F1 foreign buy volume
+	F1ForeignShort  float64 `json:"f1_foreign_short"`   // F1 foreign sell volume
+	F1TotalBid      float64 `json:"f1_total_bid"`       // F1 total bid (long orders)
+	F1TotalAsk      float64 `json:"f1_total_ask"`       // F1 total ask (short orders)
+	Date            string  `json:"date"`               // For historical requests
+	FuturesContract string  `json:"futures,omitempty"`  // Futures contract to query (f1, f2, f3, f4)
+	Error           string  `json:"error"`              // For error messages
 }
 
 // NewWebSocketServer creates a new WebSocket server
@@ -92,10 +98,15 @@ func (ws *WebSocketServer) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 
 			// Convert to WebSocket message format
 			wsMsg := WebSocketMessage{
-				Type:      "data",
-				Timestamp: msg.Timestamp,
-				VN30Value: msg.VN30Value,
-				HNXValue:  msg.HNXValue,
+				Type:           "data",
+				Timestamp:      msg.Timestamp,
+				VN30Value:      msg.VN30Value,
+				HNXValue:       msg.HNXValue,                // Legacy field
+				F1Last:         msg.HNXValue,                // Same as HNXValue for compatibility
+				F1ForeignLong:  msg.F1ForeignLong,
+				F1ForeignShort: msg.F1ForeignShort,
+				F1TotalBid:     msg.F1TotalBid,
+				F1TotalAsk:     msg.F1TotalAsk,
 			}
 
 			// Send message to client
@@ -138,20 +149,30 @@ func (ws *WebSocketServer) readMessages(conn *websocket.Conn, clientID string, d
 			conn.WriteJSON(ack)
 
 		case "historical":
+			futuresContract := msg.FuturesContract
+			if futuresContract == "" {
+				futuresContract = "f1" // Default to f1
+			}
 			ws.log.WithFields(map[string]interface{}{
 				"client_id": clientID,
 				"date":      msg.Date,
+				"futures":   futuresContract,
 			}).Info("historical data requested")
 
-			go ws.handleHistoricalRequest(conn, clientID, msg.Date)
+			go ws.handleHistoricalRequest(conn, clientID, msg.Date, futuresContract)
 
 		case "catchup":
+			futuresContract := msg.FuturesContract
+			if futuresContract == "" {
+				futuresContract = "f1" // Default to f1
+			}
 			ws.log.WithFields(map[string]interface{}{
 				"client_id": clientID,
 				"from":      msg.Timestamp,
+				"futures":   futuresContract,
 			}).Info("catchup data requested")
 
-			go ws.handleCatchupRequest(conn, clientID, msg.Timestamp)
+			go ws.handleCatchupRequest(conn, clientID, msg.Timestamp, futuresContract)
 
 		default:
 			ws.log.WithField("type", msg.Type).Warn("unknown message type")
@@ -178,7 +199,7 @@ func (ws *WebSocketServer) sendPings(conn *websocket.Conn, clientID string, done
 }
 
 // handleHistoricalRequest handles requests for historical data
-func (ws *WebSocketServer) handleHistoricalRequest(conn *websocket.Conn, clientID string, date string) {
+func (ws *WebSocketServer) handleHistoricalRequest(conn *websocket.Conn, clientID string, date string, futuresContract string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -196,10 +217,20 @@ func (ws *WebSocketServer) handleHistoricalRequest(conn *websocket.Conn, clientI
 	// If requesting historical date (not today), set end time to end of day
 	if !parsedDate.Equal(time.Now().UTC().Truncate(24 * time.Hour)) {
 		endTime = time.Date(parsedDate.Year(), parsedDate.Month(), parsedDate.Day(), 23, 59, 59, 0, time.UTC)
+	} else {
+		// For today's data, cap at market close (2:45 PM Vietnam = 7:45 AM UTC)
+		marketCloseTime := time.Date(parsedDate.Year(), parsedDate.Month(), parsedDate.Day(), 7, 45, 59, 0, time.UTC)
+		if endTime.After(marketCloseTime) {
+			ws.log.WithFields(map[string]interface{}{
+				"current_time":      endTime.Format("15:04:05 MST"),
+				"market_close_time": marketCloseTime.Format("15:04:05 MST"),
+			}).Info("capping historical data at market close (2:45 PM Vietnam time)")
+			endTime = marketCloseTime
+		}
 	}
 
 	// Query database
-	data, err := ws.repo.GetHistoricalData(ctx, startTime, endTime)
+	data, err := ws.repo.GetHistoricalData(ctx, startTime, endTime, futuresContract)
 	if err != nil {
 		ws.log.WithError(err).Error("failed to get historical data")
 		ws.sendError(conn, fmt.Sprintf("database error: %v", err))
@@ -209,10 +240,15 @@ func (ws *WebSocketServer) handleHistoricalRequest(conn *websocket.Conn, clientI
 	// Send historical data as individual messages
 	for _, point := range data {
 		msg := WebSocketMessage{
-			Type:      "historical",
-			Timestamp: point.Timestamp,
-			VN30Value: point.VN30Value,
-			HNXValue:  point.HNXValue,
+			Type:           "historical",
+			Timestamp:      point.Timestamp,
+			VN30Value:      point.VN30Value,
+			HNXValue:       point.HNXValue,
+			F1Last:         point.HNXValue,
+			F1ForeignLong:  point.F1ForeignLong,
+			F1ForeignShort: point.F1ForeignShort,
+			F1TotalBid:     point.F1TotalBid,
+			F1TotalAsk:     point.F1TotalAsk,
 		}
 		if err := conn.WriteJSON(msg); err != nil {
 			ws.log.WithError(err).WithField("client_id", clientID).Error("failed to send historical data")
@@ -231,11 +267,11 @@ func (ws *WebSocketServer) handleHistoricalRequest(conn *websocket.Conn, clientI
 }
 
 // handleCatchupRequest handles requests for catchup data from a timestamp
-func (ws *WebSocketServer) handleCatchupRequest(conn *websocket.Conn, clientID string, fromTimestamp int64) {
+func (ws *WebSocketServer) handleCatchupRequest(conn *websocket.Conn, clientID string, fromTimestamp int64, futuresContract string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	data, err := ws.repo.GetDataAfterTimestamp(ctx, fromTimestamp)
+	data, err := ws.repo.GetDataAfterTimestamp(ctx, fromTimestamp, futuresContract)
 	if err != nil {
 		ws.log.WithError(err).Error("failed to get catchup data")
 		ws.sendError(conn, fmt.Sprintf("database error: %v", err))
@@ -245,10 +281,15 @@ func (ws *WebSocketServer) handleCatchupRequest(conn *websocket.Conn, clientID s
 	// Send catchup data
 	for _, point := range data {
 		msg := WebSocketMessage{
-			Type:      "catchup",
-			Timestamp: point.Timestamp,
-			VN30Value: point.VN30Value,
-			HNXValue:  point.HNXValue,
+			Type:           "catchup",
+			Timestamp:      point.Timestamp,
+			VN30Value:      point.VN30Value,
+			HNXValue:       point.HNXValue,
+			F1Last:         point.HNXValue,
+			F1ForeignLong:  point.F1ForeignLong,
+			F1ForeignShort: point.F1ForeignShort,
+			F1TotalBid:     point.F1TotalBid,
+			F1TotalAsk:     point.F1TotalAsk,
 		}
 		if err := conn.WriteJSON(msg); err != nil {
 			ws.log.WithError(err).WithField("client_id", clientID).Error("failed to send catchup data")

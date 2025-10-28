@@ -211,12 +211,14 @@ func (ws *WebSocketServer) handleHistoricalRequest(conn *websocket.Conn, clientI
 	}
 
 	// Get all data for the requested date
-	startTime := time.Date(parsedDate.Year(), parsedDate.Month(), parsedDate.Day(), 0, 0, 0, 0, time.UTC)
+	// Market opens at 8:45 AM Vietnam time = 1:45 AM UTC
+	startTime := time.Date(parsedDate.Year(), parsedDate.Month(), parsedDate.Day(), 1, 45, 0, 0, time.UTC)
 	endTime := time.Now()
 
-	// If requesting historical date (not today), set end time to end of day
+	// If requesting historical date (not today), set end time to market close
 	if !parsedDate.Equal(time.Now().UTC().Truncate(24 * time.Hour)) {
-		endTime = time.Date(parsedDate.Year(), parsedDate.Month(), parsedDate.Day(), 23, 59, 59, 0, time.UTC)
+		// Historical date: end at market close (2:45 PM Vietnam = 7:45 AM UTC)
+		endTime = time.Date(parsedDate.Year(), parsedDate.Month(), parsedDate.Day(), 7, 45, 59, 0, time.UTC)
 	} else {
 		// For today's data, cap at market close (2:45 PM Vietnam = 7:45 AM UTC)
 		marketCloseTime := time.Date(parsedDate.Year(), parsedDate.Month(), parsedDate.Day(), 7, 45, 59, 0, time.UTC)

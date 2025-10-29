@@ -74,6 +74,266 @@ type HOSE500SecondRow struct {
 	Category      string
 }
 
+// HOSE500StreamReader provides stateful streaming of HOSE500 CSV for real-time insertion
+type HOSE500StreamReader struct {
+	file    *os.File
+	reader  *csv.Reader
+	colMap  map[string]int
+	eof     bool
+	peekRow *HOSE500SecondRow // Buffered next row for peeking
+	log     *logger.Logger
+}
+
+// NewHOSE500StreamReader creates a new streaming reader for HOSE500 CSV
+func NewHOSE500StreamReader(filePath string, log *logger.Logger) (*HOSE500StreamReader, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file: %w", err)
+	}
+
+	reader := csv.NewReader(file)
+
+	// Read header
+	header, err := reader.Read()
+	if err != nil {
+		file.Close()
+		return nil, fmt.Errorf("failed to read header: %w", err)
+	}
+
+	// Map column names to indices
+	colMap := make(map[string]int)
+	for i, col := range header {
+		colMap[col] = i
+	}
+
+	return &HOSE500StreamReader{
+		file:   file,
+		reader: reader,
+		colMap: colMap,
+		eof:    false,
+		log:    log,
+	}, nil
+}
+
+// PeekTimestamp returns the timestamp of the next row without consuming it
+func (r *HOSE500StreamReader) PeekTimestamp() (int64, error) {
+	if r.eof {
+		return 0, io.EOF
+	}
+
+	// If we have a buffered row, return its timestamp
+	if r.peekRow != nil {
+		return r.peekRow.Timestamp, nil
+	}
+
+	// Read the next row into the buffer
+	row, err := r.readNextInternal()
+	if err != nil {
+		return 0, err
+	}
+
+	r.peekRow = row
+	return row.Timestamp, nil
+}
+
+// ReadNext reads the next row from the CSV file
+func (r *HOSE500StreamReader) ReadNext() (*HOSE500SecondRow, error) {
+	if r.eof {
+		return nil, io.EOF
+	}
+
+	// If we have a buffered row, return it
+	if r.peekRow != nil {
+		row := r.peekRow
+		r.peekRow = nil
+		return row, nil
+	}
+
+	// Otherwise read a new row
+	return r.readNextInternal()
+}
+
+// readNextInternal reads and parses the next row
+func (r *HOSE500StreamReader) readNextInternal() (*HOSE500SecondRow, error) {
+	record, err := r.reader.Read()
+	if err == io.EOF {
+		r.eof = true
+		return nil, io.EOF
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse the row
+	rowInterface, err := parseHOSE500Row(record, r.colMap)
+	if err != nil {
+		return nil, err
+	}
+
+	row := rowInterface.(HOSE500SecondRow)
+	return &row, nil
+}
+
+// Close closes the underlying file
+func (r *HOSE500StreamReader) Close() error {
+	if r.file != nil {
+		return r.file.Close()
+	}
+	return nil
+}
+
+// parseHOSE500Row parses a single CSV record into a HOSE500SecondRow struct
+func parseHOSE500Row(record []string, colMap map[string]int) (interface{}, error) {
+	row := HOSE500SecondRow{}
+
+	// Parse timestamp
+	if val, err := strconv.ParseInt(record[colMap["timestamp"]], 10, 64); err == nil {
+		row.Timestamp = val
+	} else {
+		return nil, fmt.Errorf("invalid timestamp: %w", err)
+	}
+
+	row.FormattedTime = record[colMap["formatted_time"]]
+	row.Session = record[colMap["session"]]
+	row.Ticker = record[colMap["ticker"]]
+
+	// Parse order_type (nullable)
+	if orderType := record[colMap["order_type"]]; orderType != "" {
+		row.OrderType = &orderType
+	}
+
+	// Parse numeric fields - use pointers to properly handle NULL values
+	if val, err := strconv.ParseFloat(record[colMap["last"]], 64); err == nil {
+		row.Last = &val
+	}
+	if val, err := strconv.ParseFloat(record[colMap["matched_vol"]], 64); err == nil {
+		row.MatchedVol = &val
+	}
+	if val, err := strconv.ParseFloat(record[colMap["bid1"]], 64); err == nil {
+		row.Bid1 = &val
+	}
+	if val, err := strconv.ParseFloat(record[colMap["bid1_vol"]], 64); err == nil {
+		row.Bid1Vol = &val
+	}
+	if val, err := strconv.ParseFloat(record[colMap["bid2"]], 64); err == nil {
+		row.Bid2 = &val
+	}
+	if val, err := strconv.ParseFloat(record[colMap["bid2_vol"]], 64); err == nil {
+		row.Bid2Vol = &val
+	}
+	if val, err := strconv.ParseFloat(record[colMap["bid3"]], 64); err == nil {
+		row.Bid3 = &val
+	}
+	if val, err := strconv.ParseFloat(record[colMap["bid3_vol"]], 64); err == nil {
+		row.Bid3Vol = &val
+	}
+	if val, err := strconv.ParseFloat(record[colMap["ask1"]], 64); err == nil {
+		row.Ask1 = &val
+	}
+	if val, err := strconv.ParseFloat(record[colMap["ask1_vol"]], 64); err == nil {
+		row.Ask1Vol = &val
+	}
+	if val, err := strconv.ParseFloat(record[colMap["ask2"]], 64); err == nil {
+		row.Ask2 = &val
+	}
+	if val, err := strconv.ParseFloat(record[colMap["ask2_vol"]], 64); err == nil {
+		row.Ask2Vol = &val
+	}
+	if val, err := strconv.ParseFloat(record[colMap["ask3"]], 64); err == nil {
+		row.Ask3 = &val
+	}
+	if val, err := strconv.ParseFloat(record[colMap["ask3_vol"]], 64); err == nil {
+		row.Ask3Vol = &val
+	}
+	if val, err := strconv.ParseFloat(record[colMap["total_f_buy_val"]], 64); err == nil {
+		row.TotalFBuyVal = &val
+	}
+	if val, err := strconv.ParseFloat(record[colMap["total_f_sell_val"]], 64); err == nil {
+		row.TotalFSellVal = &val
+	}
+
+	row.Category = record[colMap["category"]]
+
+	return row, nil
+}
+
+// StreamCSVInChunks reads a large CSV file in chunks and processes each chunk via callback
+// This avoids loading the entire file into memory
+func StreamCSVInChunks(
+	filePath string,
+	chunkSize int,
+	rowParser func(record []string, colMap map[string]int) (interface{}, error),
+	chunkProcessor func(chunk []interface{}) error,
+	log *logger.Logger,
+) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+
+	// Read header
+	header, err := reader.Read()
+	if err != nil {
+		return fmt.Errorf("failed to read header: %w", err)
+	}
+
+	// Map column names to indices
+	colMap := make(map[string]int)
+	for i, col := range header {
+		colMap[col] = i
+	}
+
+	chunk := make([]interface{}, 0, chunkSize)
+	lineNum := 1
+	totalProcessed := 0
+
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			// Process remaining chunk
+			if len(chunk) > 0 {
+				if err := chunkProcessor(chunk); err != nil {
+					return fmt.Errorf("failed to process final chunk: %w", err)
+				}
+				totalProcessed += len(chunk)
+			}
+			break
+		}
+		if err != nil {
+			log.WithError(err).WithField("line", lineNum).Warn("failed to read CSV line, skipping")
+			lineNum++
+			continue
+		}
+
+		// Parse row using provided parser
+		row, err := rowParser(record, colMap)
+		if err != nil {
+			log.WithError(err).WithField("line", lineNum).Warn("failed to parse row, skipping")
+			lineNum++
+			continue
+		}
+
+		chunk = append(chunk, row)
+		lineNum++
+
+		// Process chunk when it reaches the desired size
+		if len(chunk) >= chunkSize {
+			if err := chunkProcessor(chunk); err != nil {
+				return fmt.Errorf("failed to process chunk at line %d: %w", lineNum, err)
+			}
+			totalProcessed += len(chunk)
+			log.WithField("processed", totalProcessed).Debug("processed chunk")
+			chunk = make([]interface{}, 0, chunkSize) // Reset chunk
+		}
+	}
+
+	log.WithField("total_rows", totalProcessed).Info("finished streaming CSV")
+	return nil
+}
+
 func main() {
 	// Load config
 	cfg, err := config.Load("")
@@ -136,17 +396,23 @@ func main() {
 	if _, err := os.Stat(futuresCSV); os.IsNotExist(err) {
 		log.WithError(err).Fatal("futures_second CSV file not found")
 	}
-	if _, err := os.Stat(hose500CSV); os.IsNotExist(err) {
+
+	// Check HOSE500 file (non-critical)
+	hose500Exists := false
+	if _, err := os.Stat(hose500CSV); err == nil {
+		hose500Exists = true
+	} else {
 		log.WithError(err).Warn("hose500_second CSV file not found (non-critical)")
 	}
 
 	log.WithFields(map[string]interface{}{
-		"index_csv":   indexCSV,
-		"futures_csv": futuresCSV,
-		"hose500_csv": hose500CSV,
+		"index_csv":      indexCSV,
+		"futures_csv":    futuresCSV,
+		"hose500_csv":    hose500CSV,
+		"hose500_exists": hose500Exists,
 	}).Info("found CSV files")
 
-	// Read CSV files
+	// Read CSV files (index and futures only - HOSE500 will be streamed during bulk insert)
 	indexRows, err := readIndexTickCSV(indexCSV, log)
 	if err != nil {
 		log.WithError(err).Fatal("failed to read index_tick CSV")
@@ -157,20 +423,10 @@ func main() {
 		log.WithError(err).Fatal("failed to read futures_second CSV")
 	}
 
-	var hose500Rows []HOSE500SecondRow
-	if _, err := os.Stat(hose500CSV); err == nil {
-		hose500Rows, err = readHOSE500SecondCSV(hose500CSV, log)
-		if err != nil {
-			log.WithError(err).Warn("failed to read hose500_second CSV (non-critical)")
-			hose500Rows = []HOSE500SecondRow{}
-		}
-	}
-
 	log.WithFields(map[string]interface{}{
 		"index_rows":   len(indexRows),
 		"futures_rows": len(futuresRows),
-		"hose500_rows": len(hose500Rows),
-	}).Info("loaded CSV data")
+	}).Info("loaded CSV data into memory (HOSE500 will be streamed during bulk insert)")
 
 	// Calculate time offset to shift CSV data to current date
 	// CSV data is from Oct 3, 2025 - we shift it to today
@@ -220,7 +476,6 @@ func main() {
 	// Bulk insert anytime from 9:00 AM onwards
 	indexIdx := 0
 	futuresIdx := 0
-	hose500Idx := 0
 
 	if currentHour >= 9 {
 		// Bulk insert data from 9:00 AM up to current time (or 14:45 if past market close)
@@ -314,50 +569,63 @@ func main() {
 		}
 		log.WithField("count", bulkInsertCount).Info("bulk inserted futures historical data")
 
-		// Bulk insert hose500_second data up to target time (in batches of 1000)
-		if len(hose500Rows) > 0 {
+		// Bulk insert hose500_second data up to target time (streaming to avoid memory issues)
+		if hose500Exists {
+			log.Info("streaming HOSE500 CSV for bulk insert (memory-optimized)")
 			bulkInsertCount = 0
-			hose500Batch := make([]HOSE500SecondRow, 0, batchSize)
 
-			for i, row := range hose500Rows {
-				csvTime := time.UnixMilli(row.Timestamp).In(vietnamLocation)
-				csvTimeInSeconds := csvTime.Hour()*3600 + csvTime.Minute()*60 + csvTime.Second()
+			// Use streaming to avoid loading entire 271MB file into memory
+			err := StreamCSVInChunks(
+				hose500CSV,
+				1000, // chunk size
+				parseHOSE500Row,
+				func(chunk []interface{}) error {
+					// Filter rows by target time and convert to typed slice
+					filteredBatch := make([]HOSE500SecondRow, 0, len(chunk))
+					shouldStop := false
 
-				if csvTimeInSeconds <= targetTimeInSeconds {
-					hose500Batch = append(hose500Batch, row)
-					hose500Idx = i + 1
+					for _, item := range chunk {
+						row := item.(HOSE500SecondRow)
+						csvTime := time.UnixMilli(row.Timestamp).In(vietnamLocation)
+						csvTimeInSeconds := csvTime.Hour()*3600 + csvTime.Minute()*60 + csvTime.Second()
 
-					// Insert batch when it reaches 1000 rows
-					if len(hose500Batch) >= batchSize {
-						if err := batchInsertHOSE500Second(ctx, pool, hose500Batch, dateOffset, log); err != nil {
-							log.WithError(err).Error("failed to batch insert hose500_second")
+						if csvTimeInSeconds <= targetTimeInSeconds {
+							filteredBatch = append(filteredBatch, row)
 						} else {
-							bulkInsertCount += len(hose500Batch)
-							log.WithField("count", bulkInsertCount).Debug("batch inserted hose500_second rows")
+							shouldStop = true
+							break
 						}
-						hose500Batch = make([]HOSE500SecondRow, 0, batchSize)
 					}
-				} else {
-					break
-				}
-			}
 
-			// Insert remaining rows in the batch
-			if len(hose500Batch) > 0 {
-				if err := batchInsertHOSE500Second(ctx, pool, hose500Batch, dateOffset, log); err != nil {
-					log.WithError(err).Error("failed to batch insert hose500_second (final batch)")
-				} else {
-					bulkInsertCount += len(hose500Batch)
-				}
+					// Insert filtered batch
+					if len(filteredBatch) > 0 {
+						if err := batchInsertHOSE500Second(ctx, pool, filteredBatch, dateOffset, log); err != nil {
+							return fmt.Errorf("batch insert failed: %w", err)
+						}
+						bulkInsertCount += len(filteredBatch)
+					}
+
+					// Stop streaming if we've passed the target time
+					if shouldStop {
+						return fmt.Errorf("reached target time") // Special error to stop streaming
+					}
+
+					return nil
+				},
+				log,
+			)
+
+			if err != nil && err.Error() != "reached target time" {
+				log.WithError(err).Warn("failed to stream HOSE500 bulk insert (non-critical)")
+			} else {
+				log.WithField("count", bulkInsertCount).Info("bulk inserted hose500_second historical data (streamed)")
 			}
-			log.WithField("count", bulkInsertCount).Info("bulk inserted hose500_second historical data")
 		}
 
 		log.WithFields(map[string]interface{}{
-			"index_position":    indexIdx,
-			"futures_position":  futuresIdx,
-			"hose500_position":  hose500Idx,
-			"current_time":      now.Format("15:04:05"),
+			"index_position":   indexIdx,
+			"futures_position": futuresIdx,
+			"current_time":     now.Format("15:04:05"),
 		}).Info("bulk insert complete - starting real-time streaming from current position")
 
 		// Refresh continuous aggregates to include data from 9:00 AM today
@@ -394,12 +662,27 @@ func main() {
 	// Start real-time streaming
 	log.Info("starting real-time data insertion")
 
+	// Initialize HOSE500 stream reader for real-time streaming
+	var hose500Stream *HOSE500StreamReader
+	var hose500StreamErr error
+	if hose500Exists {
+		// Skip rows that were already bulk inserted by seeking forward
+		// We'll need to read from the beginning and skip to find the next row
+		hose500Stream, hose500StreamErr = NewHOSE500StreamReader(hose500CSV, log)
+		if hose500StreamErr != nil {
+			log.WithError(hose500StreamErr).Warn("failed to open HOSE500 stream for real-time (non-critical)")
+		} else {
+			defer hose500Stream.Close()
+			log.Info("HOSE500 stream reader initialized for real-time insertion")
+		}
+	}
+
 	// Session tracking
 	var currentSession string
 	var sessionStarted bool
 
 	// If we already bulk inserted, mark session as started
-	if indexIdx > 0 || futuresIdx > 0 || hose500Idx > 0 {
+	if indexIdx > 0 || futuresIdx > 0 {
 		currentSession = "morning"
 		sessionStarted = true
 	}
@@ -433,10 +716,9 @@ func main() {
 				// Before 9:00 AM or after 3:00 PM - end trading session
 				if sessionStarted {
 					log.WithFields(map[string]interface{}{
-						"current_hour":      currentHour,
-						"index_position":    indexIdx,
-						"futures_position":  futuresIdx,
-						"hose500_position":  hose500Idx,
+						"current_hour":     currentHour,
+						"index_position":   indexIdx,
+						"futures_position": futuresIdx,
 					}).Info("market closed - stopping data insertion until next trading day")
 				}
 				currentSession = ""
@@ -450,7 +732,8 @@ func main() {
 			}
 
 			// Check if all CSV datasets are exhausted
-			if indexIdx >= len(indexRows) && futuresIdx >= len(futuresRows) && hose500Idx >= len(hose500Rows) {
+			hose500Exhausted := hose500Stream == nil || hose500Stream.eof
+			if indexIdx >= len(indexRows) && futuresIdx >= len(futuresRows) && hose500Exhausted {
 				log.WithField("session", currentSession).Info("CSV data exhausted, waiting for next session")
 				sessionStarted = false
 				time.Sleep(1 * time.Second) // Check again in 1 second
@@ -471,8 +754,10 @@ func main() {
 			if futuresIdx < len(futuresRows) {
 				nextFuturesTimestamp = futuresRows[futuresIdx].Timestamp
 			}
-			if hose500Idx < len(hose500Rows) {
-				nextHOSE500Timestamp = hose500Rows[hose500Idx].Timestamp
+			if hose500Stream != nil && !hose500Stream.eof {
+				if ts, err := hose500Stream.PeekTimestamp(); err == nil {
+					nextHOSE500Timestamp = ts
+				}
 			}
 
 			// Find the earliest timestamp to process across all datasets
@@ -527,9 +812,17 @@ func main() {
 						futuresIdx++
 					}
 				}
-				if hose500Idx < len(hose500Rows) && hose500Rows[hose500Idx].Timestamp == currentTimestamp {
-					for hose500Idx < len(hose500Rows) && hose500Rows[hose500Idx].Timestamp == currentTimestamp {
-						hose500Idx++
+				// Skip HOSE500 rows with this timestamp
+				if hose500Stream != nil {
+					for {
+						ts, err := hose500Stream.PeekTimestamp()
+						if err != nil || ts != currentTimestamp {
+							break
+						}
+						// Consume and skip this row
+						if _, err := hose500Stream.ReadNext(); err != nil {
+							break
+						}
 					}
 				}
 				continue
@@ -631,14 +924,23 @@ func main() {
 				}
 			}
 
-			// Insert all hose500_second rows with the same timestamp
-			if hose500Idx < len(hose500Rows) && hose500Rows[hose500Idx].Timestamp == currentTimestamp {
+			// Insert all hose500_second rows with the same timestamp (streaming)
+			if hose500Stream != nil {
 				insertedCount := 0
 
-				// Find all rows with the same timestamp and insert them
-				for hose500Idx < len(hose500Rows) && hose500Rows[hose500Idx].Timestamp == currentTimestamp {
-					row := hose500Rows[hose500Idx]
-					if err := insertHOSE500Second(ctx, pool, row, dateOffset, log); err != nil {
+				// Read and insert all rows with the same timestamp
+				for {
+					ts, err := hose500Stream.PeekTimestamp()
+					if err != nil || ts != currentTimestamp {
+						break
+					}
+
+					row, err := hose500Stream.ReadNext()
+					if err != nil {
+						break
+					}
+
+					if err := insertHOSE500Second(ctx, pool, *row, dateOffset, log); err != nil {
 						log.WithError(err).Error("failed to insert hose500_second")
 					} else {
 						var valueStr string
@@ -650,12 +952,9 @@ func main() {
 						log.WithFields(map[string]interface{}{
 							"ticker":    row.Ticker,
 							"value":     valueStr,
-							"index":     hose500Idx,
-							"total":     len(hose500Rows),
 							"timestamp": currentTimestamp,
 						}).Debug("inserted hose500_second")
 					}
-					hose500Idx++
 					insertedCount++
 				}
 
@@ -1021,116 +1320,6 @@ func batchInsertFutures(ctx context.Context, pool *pgxpool.Pool, rows []FuturesR
 
 	_, err := pool.Exec(ctx, query, valueArgs...)
 	return err
-}
-
-func readHOSE500SecondCSV(filePath string, log *logger.Logger) ([]HOSE500SecondRow, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	reader := csv.NewReader(file)
-
-	// Read header
-	header, err := reader.Read()
-	if err != nil {
-		return nil, err
-	}
-
-	// Map column names to indices
-	colMap := make(map[string]int)
-	for i, col := range header {
-		colMap[col] = i
-	}
-
-	var rows []HOSE500SecondRow
-	lineNum := 1
-
-	for {
-		record, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			log.WithError(err).WithField("line", lineNum).Warn("failed to read CSV line")
-			lineNum++
-			continue
-		}
-
-		row := HOSE500SecondRow{}
-
-		// Parse timestamp
-		if val, err := strconv.ParseInt(record[colMap["timestamp"]], 10, 64); err == nil {
-			row.Timestamp = val
-		}
-
-		row.FormattedTime = record[colMap["formatted_time"]]
-		row.Session = record[colMap["session"]]
-		row.Ticker = record[colMap["ticker"]]
-
-		// Parse order_type (nullable)
-		if orderType := record[colMap["order_type"]]; orderType != "" {
-			row.OrderType = &orderType
-		}
-
-		// Parse only essential numeric fields - use pointers to properly handle NULL values
-		if val, err := strconv.ParseFloat(record[colMap["last"]], 64); err == nil {
-			row.Last = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["matched_vol"]], 64); err == nil {
-			row.MatchedVol = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["bid1"]], 64); err == nil {
-			row.Bid1 = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["bid1_vol"]], 64); err == nil {
-			row.Bid1Vol = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["bid2"]], 64); err == nil {
-			row.Bid2 = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["bid2_vol"]], 64); err == nil {
-			row.Bid2Vol = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["bid3"]], 64); err == nil {
-			row.Bid3 = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["bid3_vol"]], 64); err == nil {
-			row.Bid3Vol = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["ask1"]], 64); err == nil {
-			row.Ask1 = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["ask1_vol"]], 64); err == nil {
-			row.Ask1Vol = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["ask2"]], 64); err == nil {
-			row.Ask2 = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["ask2_vol"]], 64); err == nil {
-			row.Ask2Vol = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["ask3"]], 64); err == nil {
-			row.Ask3 = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["ask3_vol"]], 64); err == nil {
-			row.Ask3Vol = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["total_f_buy_val"]], 64); err == nil {
-			row.TotalFBuyVal = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["total_f_sell_val"]], 64); err == nil {
-			row.TotalFSellVal = &val
-		}
-
-		row.Category = record[colMap["category"]]
-
-		rows = append(rows, row)
-		lineNum++
-	}
-
-	return rows, nil
 }
 
 func insertHOSE500Second(ctx context.Context, pool *pgxpool.Pool, row HOSE500SecondRow, timeOffset time.Duration, log *logger.Logger) error {

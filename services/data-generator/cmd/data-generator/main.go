@@ -55,14 +55,9 @@ type HOSE500SecondRow struct {
 	Session       string
 	Ticker        string
 	OrderType     *string  // "Buy" or "Sell" or NULL
-	Last          *float64
-	Change        *float64
-	PctChange     *float64
-	TotalVol      *float64
-	TotalVal      *float64
-	MatchedVol    *float64
-	MatchedVal    *float64
-	Bid1          *float64
+	Last          *float64 // For Chart 5: matched_vol × last
+	MatchedVol    *float64 // For Chart 5: Buy Up / Sell Down
+	Bid1          *float64 // For Chart 4: Order book levels
 	Bid1Vol       *float64
 	Bid2          *float64
 	Bid2Vol       *float64
@@ -74,10 +69,8 @@ type HOSE500SecondRow struct {
 	Ask2Vol       *float64
 	Ask3          *float64
 	Ask3Vol       *float64
-	TotalFBuyVol  *float64 // total_f_buy_vol
-	TotalFSellVol *float64 // total_f_sell_vol
-	TotalFBuyVal  *float64 // total_f_buy_val
-	TotalFSellVal *float64 // total_f_sell_val
+	TotalFBuyVal  *float64 // For Chart 6: Foreign net trading value
+	TotalFSellVal *float64
 	Category      string
 }
 
@@ -1081,27 +1074,12 @@ func readHOSE500SecondCSV(filePath string, log *logger.Logger) ([]HOSE500SecondR
 			row.OrderType = &orderType
 		}
 
-		// Parse numeric fields - use pointers to properly handle NULL values
+		// Parse only essential numeric fields - use pointers to properly handle NULL values
 		if val, err := strconv.ParseFloat(record[colMap["last"]], 64); err == nil {
 			row.Last = &val
 		}
-		if val, err := strconv.ParseFloat(record[colMap["change"]], 64); err == nil {
-			row.Change = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["pct_change"]], 64); err == nil {
-			row.PctChange = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["total_vol"]], 64); err == nil {
-			row.TotalVol = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["total_val"]], 64); err == nil {
-			row.TotalVal = &val
-		}
 		if val, err := strconv.ParseFloat(record[colMap["matched_vol"]], 64); err == nil {
 			row.MatchedVol = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["matched_val"]], 64); err == nil {
-			row.MatchedVal = &val
 		}
 		if val, err := strconv.ParseFloat(record[colMap["bid1"]], 64); err == nil {
 			row.Bid1 = &val
@@ -1139,12 +1117,6 @@ func readHOSE500SecondCSV(filePath string, log *logger.Logger) ([]HOSE500SecondR
 		if val, err := strconv.ParseFloat(record[colMap["ask3_vol"]], 64); err == nil {
 			row.Ask3Vol = &val
 		}
-		if val, err := strconv.ParseFloat(record[colMap["total_f_buy_vol"]], 64); err == nil {
-			row.TotalFBuyVol = &val
-		}
-		if val, err := strconv.ParseFloat(record[colMap["total_f_sell_vol"]], 64); err == nil {
-			row.TotalFSellVol = &val
-		}
 		if val, err := strconv.ParseFloat(record[colMap["total_f_buy_val"]], 64); err == nil {
 			row.TotalFBuyVal = &val
 		}
@@ -1166,22 +1138,23 @@ func insertHOSE500Second(ctx context.Context, pool *pgxpool.Pool, row HOSE500Sec
 	csvTimestamp := time.UnixMilli(row.Timestamp).UTC()
 	shiftedTimestamp := csvTimestamp.Add(timeOffset)
 
+	// Only insert essential fields needed for Charts 4-6
 	query := `
 		INSERT INTO hose500_second (
 			ts, timestamp, formatted_time, session, ticker, order_type,
-			last, change, pct_change, total_vol, total_val, matched_vol, matched_val,
+			last, matched_vol,
 			bid1, bid1_vol, bid2, bid2_vol, bid3, bid3_vol,
 			ask1, ask1_vol, ask2, ask2_vol, ask3, ask3_vol,
-			total_f_buy_vol, total_f_sell_vol, total_f_buy_val, total_f_sell_val,
+			total_f_buy_val, total_f_sell_val,
 			category
 		)
 		VALUES (
 			$1, $2, $3, $4, $5, $6,
-			$7, $8, $9, $10, $11, $12, $13,
-			$14, $15, $16, $17, $18, $19,
-			$20, $21, $22, $23, $24, $25,
-			$26, $27, $28, $29,
-			$30
+			$7, $8,
+			$9, $10, $11, $12, $13, $14,
+			$15, $16, $17, $18, $19, $20,
+			$21, $22,
+			$23
 		)
 		ON CONFLICT DO NOTHING
 	`
@@ -1194,12 +1167,7 @@ func insertHOSE500Second(ctx context.Context, pool *pgxpool.Pool, row HOSE500Sec
 		row.Ticker,
 		row.OrderType,
 		row.Last,
-		row.Change,
-		row.PctChange,
-		row.TotalVol,
-		row.TotalVal,
 		row.MatchedVol,
-		row.MatchedVal,
 		row.Bid1,
 		row.Bid1Vol,
 		row.Bid2,
@@ -1212,8 +1180,6 @@ func insertHOSE500Second(ctx context.Context, pool *pgxpool.Pool, row HOSE500Sec
 		row.Ask2Vol,
 		row.Ask3,
 		row.Ask3Vol,
-		row.TotalFBuyVol,
-		row.TotalFSellVol,
 		row.TotalFBuyVal,
 		row.TotalFSellVal,
 		row.Category,
@@ -1227,19 +1193,19 @@ func batchInsertHOSE500Second(ctx context.Context, pool *pgxpool.Pool, rows []HO
 		return nil
 	}
 
-	// Build multi-row INSERT statement
+	// Build multi-row INSERT statement - only 23 fields needed for Charts 4-6
 	valueStrings := make([]string, 0, len(rows))
-	valueArgs := make([]interface{}, 0, len(rows)*30)
+	valueArgs := make([]interface{}, 0, len(rows)*23)
 
 	for i, row := range rows {
 		csvTimestamp := time.UnixMilli(row.Timestamp).UTC()
 		shiftedTimestamp := csvTimestamp.Add(timeOffset)
 
 		valueStrings = append(valueStrings, fmt.Sprintf(
-			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
-			i*30+1, i*30+2, i*30+3, i*30+4, i*30+5, i*30+6, i*30+7, i*30+8, i*30+9, i*30+10,
-			i*30+11, i*30+12, i*30+13, i*30+14, i*30+15, i*30+16, i*30+17, i*30+18, i*30+19, i*30+20,
-			i*30+21, i*30+22, i*30+23, i*30+24, i*30+25, i*30+26, i*30+27, i*30+28, i*30+29, i*30+30,
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			i*23+1, i*23+2, i*23+3, i*23+4, i*23+5, i*23+6, i*23+7, i*23+8, i*23+9, i*23+10,
+			i*23+11, i*23+12, i*23+13, i*23+14, i*23+15, i*23+16, i*23+17, i*23+18, i*23+19, i*23+20,
+			i*23+21, i*23+22, i*23+23,
 		))
 
 		valueArgs = append(valueArgs,
@@ -1250,12 +1216,7 @@ func batchInsertHOSE500Second(ctx context.Context, pool *pgxpool.Pool, rows []HO
 			row.Ticker,
 			row.OrderType,
 			row.Last,
-			row.Change,
-			row.PctChange,
-			row.TotalVol,
-			row.TotalVal,
 			row.MatchedVol,
-			row.MatchedVal,
 			row.Bid1,
 			row.Bid1Vol,
 			row.Bid2,
@@ -1268,8 +1229,6 @@ func batchInsertHOSE500Second(ctx context.Context, pool *pgxpool.Pool, rows []HO
 			row.Ask2Vol,
 			row.Ask3,
 			row.Ask3Vol,
-			row.TotalFBuyVol,
-			row.TotalFSellVol,
 			row.TotalFBuyVal,
 			row.TotalFSellVal,
 			row.Category,
@@ -1279,10 +1238,10 @@ func batchInsertHOSE500Second(ctx context.Context, pool *pgxpool.Pool, rows []HO
 	query := fmt.Sprintf(`
 		INSERT INTO hose500_second (
 			ts, timestamp, formatted_time, session, ticker, order_type,
-			last, change, pct_change, total_vol, total_val, matched_vol, matched_val,
+			last, matched_vol,
 			bid1, bid1_vol, bid2, bid2_vol, bid3, bid3_vol,
 			ask1, ask1_vol, ask2, ask2_vol, ask3, ask3_vol,
-			total_f_buy_vol, total_f_sell_vol, total_f_buy_val, total_f_sell_val,
+			total_f_buy_val, total_f_sell_val,
 			category
 		) VALUES %s
 		ON CONFLICT DO NOTHING

@@ -82,6 +82,18 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 			FROM index_tick_15s_cagg
 			WHERE ticker = 'VN30' AND bucket >= $1 AND bucket <= $2
 		),
+		vn30_stocks_buckets AS (
+			-- Query pre-computed continuous aggregate for VN30 stocks data
+			SELECT
+				bucket,
+				total_buy_order,
+				total_sell_order,
+				total_buy_up,
+				total_sell_down,
+				foreign_net_val
+			FROM vn30_15s_cagg
+			WHERE bucket >= $1 AND bucket <= $2
+		),
 		futures_buckets AS (
 			-- Query pre-computed continuous aggregate for futures data
 			SELECT
@@ -103,9 +115,15 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 				f.foreign_long as foreign_long_raw,
 				f.foreign_short as foreign_short_raw,
 				f.total_bid as total_bid_raw,
-				f.total_ask as total_ask_raw
+				f.total_ask as total_ask_raw,
+				vs.total_buy_order as vn30_buy_order_raw,
+				vs.total_sell_order as vn30_sell_order_raw,
+				vs.total_buy_up as vn30_buy_up_raw,
+				vs.total_sell_down as vn30_sell_down_raw,
+				vs.foreign_net_val as vn30_foreign_net_raw
 			FROM time_series t
 			LEFT JOIN vn30_buckets v ON t.bucket = v.bucket
+			LEFT JOIN vn30_stocks_buckets vs ON t.bucket = vs.bucket
 			LEFT JOIN futures_buckets f ON t.bucket = f.bucket
 		),
 		forward_filled AS (
@@ -191,7 +209,67 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 						ORDER BY bucket DESC
 						LIMIT 1
 					)
-				) as total_ask_filled
+				) as total_ask_filled,
+				-- Forward fill VN30 Total Buy Order
+				COALESCE(
+					vn30_buy_order_raw,
+					(
+						SELECT total_buy_order
+						FROM vn30_15s_cagg
+						WHERE bucket <= joined_data.bucket
+							AND total_buy_order IS NOT NULL
+						ORDER BY bucket DESC
+						LIMIT 1
+					)
+				) as vn30_buy_order_filled,
+				-- Forward fill VN30 Total Sell Order
+				COALESCE(
+					vn30_sell_order_raw,
+					(
+						SELECT total_sell_order
+						FROM vn30_15s_cagg
+						WHERE bucket <= joined_data.bucket
+							AND total_sell_order IS NOT NULL
+						ORDER BY bucket DESC
+						LIMIT 1
+					)
+				) as vn30_sell_order_filled,
+				-- Forward fill VN30 Buy Up
+				COALESCE(
+					vn30_buy_up_raw,
+					(
+						SELECT total_buy_up
+						FROM vn30_15s_cagg
+						WHERE bucket <= joined_data.bucket
+							AND total_buy_up IS NOT NULL
+						ORDER BY bucket DESC
+						LIMIT 1
+					)
+				) as vn30_buy_up_filled,
+				-- Forward fill VN30 Sell Down
+				COALESCE(
+					vn30_sell_down_raw,
+					(
+						SELECT total_sell_down
+						FROM vn30_15s_cagg
+						WHERE bucket <= joined_data.bucket
+							AND total_sell_down IS NOT NULL
+						ORDER BY bucket DESC
+						LIMIT 1
+					)
+				) as vn30_sell_down_filled,
+				-- Forward fill VN30 Foreign Net
+				COALESCE(
+					vn30_foreign_net_raw,
+					(
+						SELECT foreign_net_val
+						FROM vn30_15s_cagg
+						WHERE bucket <= joined_data.bucket
+							AND foreign_net_val IS NOT NULL
+						ORDER BY bucket DESC
+						LIMIT 1
+					)
+				) as vn30_foreign_net_filled
 			FROM joined_data
 		)
 		SELECT
@@ -201,7 +279,12 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 			foreign_long_filled as foreign_long_value,
 			foreign_short_filled as foreign_short_value,
 			total_bid_filled as total_bid_value,
-			total_ask_filled as total_ask_value
+			total_ask_filled as total_ask_value,
+			vn30_buy_order_filled as vn30_buy_order_value,
+			vn30_sell_order_filled as vn30_sell_order_value,
+			vn30_buy_up_filled as vn30_buy_up_value,
+			vn30_sell_down_filled as vn30_sell_down_value,
+			vn30_foreign_net_filled as vn30_foreign_net_value
 		FROM forward_filled
 		WHERE vn30_filled IS NOT NULL OR hnx_filled IS NOT NULL
 		ORDER BY bucket;
@@ -218,8 +301,22 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 	for rows.Next() {
 		var data repository.MarketData
 		var vn30Val, hnxVal, foreignLongVal, foreignShortVal, totalBidVal, totalAskVal *float64
+		var vn30BuyOrderVal, vn30SellOrderVal, vn30BuyUpVal, vn30SellDownVal, vn30ForeignNetVal *float64
 
-		if err := rows.Scan(&data.Timestamp, &vn30Val, &hnxVal, &foreignLongVal, &foreignShortVal, &totalBidVal, &totalAskVal); err != nil {
+		if err := rows.Scan(
+			&data.Timestamp,
+			&vn30Val,
+			&hnxVal,
+			&foreignLongVal,
+			&foreignShortVal,
+			&totalBidVal,
+			&totalAskVal,
+			&vn30BuyOrderVal,
+			&vn30SellOrderVal,
+			&vn30BuyUpVal,
+			&vn30SellDownVal,
+			&vn30ForeignNetVal,
+		); err != nil {
 			r.log.WithError(err).Error("failed to scan row")
 			return nil, fmt.Errorf("scan error: %w", err)
 		}
@@ -242,6 +339,21 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 		}
 		if totalAskVal != nil {
 			data.F1TotalAsk = *totalAskVal
+		}
+		if vn30BuyOrderVal != nil {
+			data.VN30TotalBuyOrder = *vn30BuyOrderVal
+		}
+		if vn30SellOrderVal != nil {
+			data.VN30TotalSellOrder = *vn30SellOrderVal
+		}
+		if vn30BuyUpVal != nil {
+			data.VN30BuyUp = *vn30BuyUpVal
+		}
+		if vn30SellDownVal != nil {
+			data.VN30SellDown = *vn30SellDownVal
+		}
+		if vn30ForeignNetVal != nil {
+			data.VN30ForeignNet = *vn30ForeignNetVal
 		}
 
 		results = append(results, data)
@@ -275,6 +387,19 @@ func (r *Repository) GetLatestData(ctx context.Context, futuresContract string) 
 			ORDER BY bucket DESC
 			LIMIT 1
 		),
+		vn30_stocks_latest AS (
+			SELECT
+				EXTRACT(EPOCH FROM bucket)::bigint as timestamp,
+				total_buy_order,
+				total_sell_order,
+				total_buy_up,
+				total_sell_down,
+				foreign_net_val
+			FROM vn30_15s_cagg
+			WHERE bucket >= time_bucket('15 seconds', NOW()) - INTERVAL '1 hour'
+			ORDER BY bucket DESC
+			LIMIT 1
+		),
 		futures_latest AS (
 			SELECT
 				EXTRACT(EPOCH FROM bucket)::bigint as timestamp,
@@ -290,14 +415,20 @@ func (r *Repository) GetLatestData(ctx context.Context, futuresContract string) 
 			LIMIT 1
 		)
 		SELECT
-			GREATEST(v.timestamp, f.timestamp) as timestamp,
+			GREATEST(v.timestamp, f.timestamp, vs.timestamp) as timestamp,
 			COALESCE(v.vn30_value, 0) as vn30_value,
 			COALESCE(f.hnx_value, 0) as hnx_value,
 			COALESCE(f.foreign_long, 0) as foreign_long,
 			COALESCE(f.foreign_short, 0) as foreign_short,
 			COALESCE(f.total_bid, 0) as total_bid,
-			COALESCE(f.total_ask, 0) as total_ask
+			COALESCE(f.total_ask, 0) as total_ask,
+			COALESCE(vs.total_buy_order, 0) as vn30_buy_order,
+			COALESCE(vs.total_sell_order, 0) as vn30_sell_order,
+			COALESCE(vs.total_buy_up, 0) as vn30_buy_up,
+			COALESCE(vs.total_sell_down, 0) as vn30_sell_down,
+			COALESCE(vs.foreign_net_val, 0) as vn30_foreign_net
 		FROM vn30_latest v
+		FULL OUTER JOIN vn30_stocks_latest vs ON true
 		FULL OUTER JOIN futures_latest f ON true;
 	`
 
@@ -310,6 +441,11 @@ func (r *Repository) GetLatestData(ctx context.Context, futuresContract string) 
 		&data.F1ForeignShort,
 		&data.F1TotalBid,
 		&data.F1TotalAsk,
+		&data.VN30TotalBuyOrder,
+		&data.VN30TotalSellOrder,
+		&data.VN30BuyUp,
+		&data.VN30SellDown,
+		&data.VN30ForeignNet,
 	)
 	if err != nil {
 		r.log.WithError(err).Debug("failed to get latest data from continuous aggregates")

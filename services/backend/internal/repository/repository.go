@@ -14,6 +14,13 @@ type MarketData struct {
 	F1ForeignShort float64 // F1 foreign sell volume (total_f_sell_vol)
 	F1TotalBid     float64 // F1 total bid (long orders)
 	F1TotalAsk     float64 // F1 total ask (short orders)
+
+	// VN30 Stocks Data (Charts 4-6)
+	VN30TotalBuyOrder  float64 // Chart 4: Total buy orders across VN30 stocks
+	VN30TotalSellOrder float64 // Chart 4: Total sell orders across VN30 stocks
+	VN30BuyUp          float64 // Chart 5: Total buy-up volume across VN30 stocks
+	VN30SellDown       float64 // Chart 5: Total sell-down volume across VN30 stocks
+	VN30ForeignNet     float64 // Chart 6: Foreign net trading value across VN30 stocks
 }
 
 // ChartData represents aggregated data for a specific ticker

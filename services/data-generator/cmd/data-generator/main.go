@@ -49,6 +49,38 @@ type FuturesRow struct {
 	Category       string
 }
 
+type HOSE500SecondRow struct {
+	Timestamp     int64
+	FormattedTime string
+	Session       string
+	Ticker        string
+	OrderType     *string  // "Buy" or "Sell" or NULL
+	Last          *float64
+	Change        *float64
+	PctChange     *float64
+	TotalVol      *float64
+	TotalVal      *float64
+	MatchedVol    *float64
+	MatchedVal    *float64
+	Bid1          *float64
+	Bid1Vol       *float64
+	Bid2          *float64
+	Bid2Vol       *float64
+	Bid3          *float64
+	Bid3Vol       *float64
+	Ask1          *float64
+	Ask1Vol       *float64
+	Ask2          *float64
+	Ask2Vol       *float64
+	Ask3          *float64
+	Ask3Vol       *float64
+	TotalFBuyVol  *float64 // total_f_buy_vol
+	TotalFSellVol *float64 // total_f_sell_vol
+	TotalFBuyVal  *float64 // total_f_buy_val
+	TotalFSellVal *float64 // total_f_sell_val
+	Category      string
+}
+
 func main() {
 	// Load config
 	cfg, err := config.Load("")
@@ -102,6 +134,7 @@ func main() {
 	// Find CSV files
 	indexCSV := "/app/data/20251003_index_tick.csv"
 	futuresCSV := "/app/data/20251003_futures_second.csv"
+	hose500CSV := "/app/data/20251003_hose500_second.csv"
 
 	// Check if files exist
 	if _, err := os.Stat(indexCSV); os.IsNotExist(err) {
@@ -110,10 +143,14 @@ func main() {
 	if _, err := os.Stat(futuresCSV); os.IsNotExist(err) {
 		log.WithError(err).Fatal("futures_second CSV file not found")
 	}
+	if _, err := os.Stat(hose500CSV); os.IsNotExist(err) {
+		log.WithError(err).Warn("hose500_second CSV file not found (non-critical)")
+	}
 
 	log.WithFields(map[string]interface{}{
 		"index_csv":   indexCSV,
 		"futures_csv": futuresCSV,
+		"hose500_csv": hose500CSV,
 	}).Info("found CSV files")
 
 	// Read CSV files
@@ -127,9 +164,19 @@ func main() {
 		log.WithError(err).Fatal("failed to read futures_second CSV")
 	}
 
+	var hose500Rows []HOSE500SecondRow
+	if _, err := os.Stat(hose500CSV); err == nil {
+		hose500Rows, err = readHOSE500SecondCSV(hose500CSV, log)
+		if err != nil {
+			log.WithError(err).Warn("failed to read hose500_second CSV (non-critical)")
+			hose500Rows = []HOSE500SecondRow{}
+		}
+	}
+
 	log.WithFields(map[string]interface{}{
 		"index_rows":   len(indexRows),
 		"futures_rows": len(futuresRows),
+		"hose500_rows": len(hose500Rows),
 	}).Info("loaded CSV data")
 
 	// Calculate time offset to shift CSV data to current date
@@ -168,7 +215,7 @@ func main() {
 		// No data for today and it's past 9 AM - clear old data and prepare for fresh import
 		log.Info("no data found for today - clearing old data and preparing fresh import")
 
-		truncateQuery := `TRUNCATE index_tick, futures_table CASCADE;`
+		truncateQuery := `TRUNCATE index_tick, futures_table, hose500_second CASCADE;`
 		if _, err := pool.Exec(ctx, truncateQuery); err != nil {
 			log.WithError(err).Warn("failed to truncate old data (non-critical)")
 		} else {
@@ -180,6 +227,7 @@ func main() {
 	// Bulk insert anytime from 9:00 AM onwards
 	indexIdx := 0
 	futuresIdx := 0
+	hose500Idx := 0
 
 	if currentHour >= 9 {
 		// Bulk insert data from 9:00 AM up to current time (or 14:45 if past market close)
@@ -273,10 +321,50 @@ func main() {
 		}
 		log.WithField("count", bulkInsertCount).Info("bulk inserted futures historical data")
 
+		// Bulk insert hose500_second data up to target time (in batches of 1000)
+		if len(hose500Rows) > 0 {
+			bulkInsertCount = 0
+			hose500Batch := make([]HOSE500SecondRow, 0, batchSize)
+
+			for i, row := range hose500Rows {
+				csvTime := time.UnixMilli(row.Timestamp).In(vietnamLocation)
+				csvTimeInSeconds := csvTime.Hour()*3600 + csvTime.Minute()*60 + csvTime.Second()
+
+				if csvTimeInSeconds <= targetTimeInSeconds {
+					hose500Batch = append(hose500Batch, row)
+					hose500Idx = i + 1
+
+					// Insert batch when it reaches 1000 rows
+					if len(hose500Batch) >= batchSize {
+						if err := batchInsertHOSE500Second(ctx, pool, hose500Batch, dateOffset, log); err != nil {
+							log.WithError(err).Error("failed to batch insert hose500_second")
+						} else {
+							bulkInsertCount += len(hose500Batch)
+							log.WithField("count", bulkInsertCount).Debug("batch inserted hose500_second rows")
+						}
+						hose500Batch = make([]HOSE500SecondRow, 0, batchSize)
+					}
+				} else {
+					break
+				}
+			}
+
+			// Insert remaining rows in the batch
+			if len(hose500Batch) > 0 {
+				if err := batchInsertHOSE500Second(ctx, pool, hose500Batch, dateOffset, log); err != nil {
+					log.WithError(err).Error("failed to batch insert hose500_second (final batch)")
+				} else {
+					bulkInsertCount += len(hose500Batch)
+				}
+			}
+			log.WithField("count", bulkInsertCount).Info("bulk inserted hose500_second historical data")
+		}
+
 		log.WithFields(map[string]interface{}{
-			"index_position":   indexIdx,
-			"futures_position": futuresIdx,
-			"current_time":     now.Format("15:04:05"),
+			"index_position":    indexIdx,
+			"futures_position":  futuresIdx,
+			"hose500_position":  hose500Idx,
+			"current_time":      now.Format("15:04:05"),
 		}).Info("bulk insert complete - starting real-time streaming from current position")
 
 		// Refresh continuous aggregates to include data from 9:00 AM today
@@ -287,6 +375,8 @@ func main() {
 			fmt.Sprintf("CALL refresh_continuous_aggregate('index_tick_15s_cagg', '%s'::timestamptz, '%s'::timestamptz)",
 				marketOpenTime.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339)),
 			fmt.Sprintf("CALL refresh_continuous_aggregate('futures_15s_cagg', '%s'::timestamptz, '%s'::timestamptz)",
+				marketOpenTime.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339)),
+			fmt.Sprintf("CALL refresh_continuous_aggregate('vn30_15s_cagg', '%s'::timestamptz, '%s'::timestamptz)",
 				marketOpenTime.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339)),
 		}
 
@@ -316,7 +406,7 @@ func main() {
 	var sessionStarted bool
 
 	// If we already bulk inserted, mark session as started
-	if indexIdx > 0 || futuresIdx > 0 {
+	if indexIdx > 0 || futuresIdx > 0 || hose500Idx > 0 {
 		currentSession = "morning"
 		sessionStarted = true
 	}
@@ -350,9 +440,10 @@ func main() {
 				// Before 9:00 AM or after 3:00 PM - end trading session
 				if sessionStarted {
 					log.WithFields(map[string]interface{}{
-						"current_hour":     currentHour,
-						"index_position":   indexIdx,
-						"futures_position": futuresIdx,
+						"current_hour":      currentHour,
+						"index_position":    indexIdx,
+						"futures_position":  futuresIdx,
+						"hose500_position":  hose500Idx,
 					}).Info("market closed - stopping data insertion until next trading day")
 				}
 				currentSession = ""
@@ -365,8 +456,8 @@ func main() {
 				continue
 			}
 
-			// Check if both CSV datasets are exhausted
-			if indexIdx >= len(indexRows) && futuresIdx >= len(futuresRows) {
+			// Check if all CSV datasets are exhausted
+			if indexIdx >= len(indexRows) && futuresIdx >= len(futuresRows) && hose500Idx >= len(hose500Rows) {
 				log.WithField("session", currentSession).Info("CSV data exhausted, waiting for next session")
 				sessionStarted = false
 				time.Sleep(1 * time.Second) // Check again in 1 second
@@ -376,9 +467,10 @@ func main() {
 			// Track the earliest timestamp we're about to insert
 			var currentTimestamp int64 = 0
 
-			// Get next timestamps from both datasets
+			// Get next timestamps from all datasets
 			var nextIndexTimestamp int64 = 0
 			var nextFuturesTimestamp int64 = 0
+			var nextHOSE500Timestamp int64 = 0
 
 			if indexIdx < len(indexRows) {
 				nextIndexTimestamp = indexRows[indexIdx].Timestamp
@@ -386,18 +478,29 @@ func main() {
 			if futuresIdx < len(futuresRows) {
 				nextFuturesTimestamp = futuresRows[futuresIdx].Timestamp
 			}
+			if hose500Idx < len(hose500Rows) {
+				nextHOSE500Timestamp = hose500Rows[hose500Idx].Timestamp
+			}
 
-			// Find the earliest timestamp to process
-			if nextIndexTimestamp > 0 && nextFuturesTimestamp > 0 {
-				if nextIndexTimestamp < nextFuturesTimestamp {
-					currentTimestamp = nextIndexTimestamp
-				} else {
-					currentTimestamp = nextFuturesTimestamp
+			// Find the earliest timestamp to process across all datasets
+			timestamps := []int64{}
+			if nextIndexTimestamp > 0 {
+				timestamps = append(timestamps, nextIndexTimestamp)
+			}
+			if nextFuturesTimestamp > 0 {
+				timestamps = append(timestamps, nextFuturesTimestamp)
+			}
+			if nextHOSE500Timestamp > 0 {
+				timestamps = append(timestamps, nextHOSE500Timestamp)
+			}
+
+			if len(timestamps) > 0 {
+				currentTimestamp = timestamps[0]
+				for _, ts := range timestamps {
+					if ts < currentTimestamp {
+						currentTimestamp = ts
+					}
 				}
-			} else if nextIndexTimestamp > 0 {
-				currentTimestamp = nextIndexTimestamp
-			} else if nextFuturesTimestamp > 0 {
-				currentTimestamp = nextFuturesTimestamp
 			}
 
 			// Calculate target real time for this CSV data point
@@ -420,7 +523,7 @@ func main() {
 					"csv_timestamp":    currentTimestamp,
 				}).Debug("skipping CSV data outside market hours (before 9:00 AM or after 2:45 PM)")
 
-				// Advance both indices to skip this timestamp
+				// Advance all indices to skip this timestamp
 				if indexIdx < len(indexRows) && indexRows[indexIdx].Timestamp == currentTimestamp {
 					for indexIdx < len(indexRows) && indexRows[indexIdx].Timestamp == currentTimestamp {
 						indexIdx++
@@ -429,6 +532,11 @@ func main() {
 				if futuresIdx < len(futuresRows) && futuresRows[futuresIdx].Timestamp == currentTimestamp {
 					for futuresIdx < len(futuresRows) && futuresRows[futuresIdx].Timestamp == currentTimestamp {
 						futuresIdx++
+					}
+				}
+				if hose500Idx < len(hose500Rows) && hose500Rows[hose500Idx].Timestamp == currentTimestamp {
+					for hose500Idx < len(hose500Rows) && hose500Rows[hose500Idx].Timestamp == currentTimestamp {
+						hose500Idx++
 					}
 				}
 				continue
@@ -527,6 +635,42 @@ func main() {
 						"count":     insertedCount,
 						"timestamp": currentTimestamp,
 					}).Info("inserted multiple futures rows with same timestamp")
+				}
+			}
+
+			// Insert all hose500_second rows with the same timestamp
+			if hose500Idx < len(hose500Rows) && hose500Rows[hose500Idx].Timestamp == currentTimestamp {
+				insertedCount := 0
+
+				// Find all rows with the same timestamp and insert them
+				for hose500Idx < len(hose500Rows) && hose500Rows[hose500Idx].Timestamp == currentTimestamp {
+					row := hose500Rows[hose500Idx]
+					if err := insertHOSE500Second(ctx, pool, row, dateOffset, log); err != nil {
+						log.WithError(err).Error("failed to insert hose500_second")
+					} else {
+						var valueStr string
+						if row.Last != nil {
+							valueStr = fmt.Sprintf("%.2f", *row.Last)
+						} else {
+							valueStr = "NULL"
+						}
+						log.WithFields(map[string]interface{}{
+							"ticker":    row.Ticker,
+							"value":     valueStr,
+							"index":     hose500Idx,
+							"total":     len(hose500Rows),
+							"timestamp": currentTimestamp,
+						}).Debug("inserted hose500_second")
+					}
+					hose500Idx++
+					insertedCount++
+				}
+
+				if insertedCount > 1 {
+					log.WithFields(map[string]interface{}{
+						"count":     insertedCount,
+						"timestamp": currentTimestamp,
+					}).Info("inserted multiple hose500_second rows with same timestamp")
 				}
 			}
 
@@ -877,6 +1021,268 @@ func batchInsertFutures(ctx context.Context, pool *pgxpool.Pool, rows []FuturesR
 			ts, timestamp, formatted_time, session, ticker,
 			f, last, change, pct_change, total_vol, total_val,
 			total_f_buy_vol, total_f_sell_vol, total_bid, total_ask,
+			category
+		) VALUES %s
+		ON CONFLICT DO NOTHING
+	`, strings.Join(valueStrings, ","))
+
+	_, err := pool.Exec(ctx, query, valueArgs...)
+	return err
+}
+
+func readHOSE500SecondCSV(filePath string, log *logger.Logger) ([]HOSE500SecondRow, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+
+	// Read header
+	header, err := reader.Read()
+	if err != nil {
+		return nil, err
+	}
+
+	// Map column names to indices
+	colMap := make(map[string]int)
+	for i, col := range header {
+		colMap[col] = i
+	}
+
+	var rows []HOSE500SecondRow
+	lineNum := 1
+
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.WithError(err).WithField("line", lineNum).Warn("failed to read CSV line")
+			lineNum++
+			continue
+		}
+
+		row := HOSE500SecondRow{}
+
+		// Parse timestamp
+		if val, err := strconv.ParseInt(record[colMap["timestamp"]], 10, 64); err == nil {
+			row.Timestamp = val
+		}
+
+		row.FormattedTime = record[colMap["formatted_time"]]
+		row.Session = record[colMap["session"]]
+		row.Ticker = record[colMap["ticker"]]
+
+		// Parse order_type (nullable)
+		if orderType := record[colMap["order_type"]]; orderType != "" {
+			row.OrderType = &orderType
+		}
+
+		// Parse numeric fields - use pointers to properly handle NULL values
+		if val, err := strconv.ParseFloat(record[colMap["last"]], 64); err == nil {
+			row.Last = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["change"]], 64); err == nil {
+			row.Change = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["pct_change"]], 64); err == nil {
+			row.PctChange = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["total_vol"]], 64); err == nil {
+			row.TotalVol = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["total_val"]], 64); err == nil {
+			row.TotalVal = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["matched_vol"]], 64); err == nil {
+			row.MatchedVol = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["matched_val"]], 64); err == nil {
+			row.MatchedVal = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["bid1"]], 64); err == nil {
+			row.Bid1 = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["bid1_vol"]], 64); err == nil {
+			row.Bid1Vol = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["bid2"]], 64); err == nil {
+			row.Bid2 = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["bid2_vol"]], 64); err == nil {
+			row.Bid2Vol = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["bid3"]], 64); err == nil {
+			row.Bid3 = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["bid3_vol"]], 64); err == nil {
+			row.Bid3Vol = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["ask1"]], 64); err == nil {
+			row.Ask1 = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["ask1_vol"]], 64); err == nil {
+			row.Ask1Vol = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["ask2"]], 64); err == nil {
+			row.Ask2 = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["ask2_vol"]], 64); err == nil {
+			row.Ask2Vol = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["ask3"]], 64); err == nil {
+			row.Ask3 = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["ask3_vol"]], 64); err == nil {
+			row.Ask3Vol = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["total_f_buy_vol"]], 64); err == nil {
+			row.TotalFBuyVol = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["total_f_sell_vol"]], 64); err == nil {
+			row.TotalFSellVol = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["total_f_buy_val"]], 64); err == nil {
+			row.TotalFBuyVal = &val
+		}
+		if val, err := strconv.ParseFloat(record[colMap["total_f_sell_val"]], 64); err == nil {
+			row.TotalFSellVal = &val
+		}
+
+		row.Category = record[colMap["category"]]
+
+		rows = append(rows, row)
+		lineNum++
+	}
+
+	return rows, nil
+}
+
+func insertHOSE500Second(ctx context.Context, pool *pgxpool.Pool, row HOSE500SecondRow, timeOffset time.Duration, log *logger.Logger) error {
+	// Apply dynamic time offset to shift CSV data to current date
+	csvTimestamp := time.UnixMilli(row.Timestamp).UTC()
+	shiftedTimestamp := csvTimestamp.Add(timeOffset)
+
+	query := `
+		INSERT INTO hose500_second (
+			ts, timestamp, formatted_time, session, ticker, order_type,
+			last, change, pct_change, total_vol, total_val, matched_vol, matched_val,
+			bid1, bid1_vol, bid2, bid2_vol, bid3, bid3_vol,
+			ask1, ask1_vol, ask2, ask2_vol, ask3, ask3_vol,
+			total_f_buy_vol, total_f_sell_vol, total_f_buy_val, total_f_sell_val,
+			category
+		)
+		VALUES (
+			$1, $2, $3, $4, $5, $6,
+			$7, $8, $9, $10, $11, $12, $13,
+			$14, $15, $16, $17, $18, $19,
+			$20, $21, $22, $23, $24, $25,
+			$26, $27, $28, $29,
+			$30
+		)
+		ON CONFLICT DO NOTHING
+	`
+
+	_, err := pool.Exec(ctx, query,
+		shiftedTimestamp,
+		shiftedTimestamp.UnixMilli(),
+		row.FormattedTime,
+		row.Session,
+		row.Ticker,
+		row.OrderType,
+		row.Last,
+		row.Change,
+		row.PctChange,
+		row.TotalVol,
+		row.TotalVal,
+		row.MatchedVol,
+		row.MatchedVal,
+		row.Bid1,
+		row.Bid1Vol,
+		row.Bid2,
+		row.Bid2Vol,
+		row.Bid3,
+		row.Bid3Vol,
+		row.Ask1,
+		row.Ask1Vol,
+		row.Ask2,
+		row.Ask2Vol,
+		row.Ask3,
+		row.Ask3Vol,
+		row.TotalFBuyVol,
+		row.TotalFSellVol,
+		row.TotalFBuyVal,
+		row.TotalFSellVal,
+		row.Category,
+	)
+
+	return err
+}
+
+func batchInsertHOSE500Second(ctx context.Context, pool *pgxpool.Pool, rows []HOSE500SecondRow, timeOffset time.Duration, log *logger.Logger) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	// Build multi-row INSERT statement
+	valueStrings := make([]string, 0, len(rows))
+	valueArgs := make([]interface{}, 0, len(rows)*30)
+
+	for i, row := range rows {
+		csvTimestamp := time.UnixMilli(row.Timestamp).UTC()
+		shiftedTimestamp := csvTimestamp.Add(timeOffset)
+
+		valueStrings = append(valueStrings, fmt.Sprintf(
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			i*30+1, i*30+2, i*30+3, i*30+4, i*30+5, i*30+6, i*30+7, i*30+8, i*30+9, i*30+10,
+			i*30+11, i*30+12, i*30+13, i*30+14, i*30+15, i*30+16, i*30+17, i*30+18, i*30+19, i*30+20,
+			i*30+21, i*30+22, i*30+23, i*30+24, i*30+25, i*30+26, i*30+27, i*30+28, i*30+29, i*30+30,
+		))
+
+		valueArgs = append(valueArgs,
+			shiftedTimestamp,
+			shiftedTimestamp.UnixMilli(),
+			row.FormattedTime,
+			row.Session,
+			row.Ticker,
+			row.OrderType,
+			row.Last,
+			row.Change,
+			row.PctChange,
+			row.TotalVol,
+			row.TotalVal,
+			row.MatchedVol,
+			row.MatchedVal,
+			row.Bid1,
+			row.Bid1Vol,
+			row.Bid2,
+			row.Bid2Vol,
+			row.Bid3,
+			row.Bid3Vol,
+			row.Ask1,
+			row.Ask1Vol,
+			row.Ask2,
+			row.Ask2Vol,
+			row.Ask3,
+			row.Ask3Vol,
+			row.TotalFBuyVol,
+			row.TotalFSellVol,
+			row.TotalFBuyVal,
+			row.TotalFSellVal,
+			row.Category,
+		)
+	}
+
+	query := fmt.Sprintf(`
+		INSERT INTO hose500_second (
+			ts, timestamp, formatted_time, session, ticker, order_type,
+			last, change, pct_change, total_vol, total_val, matched_vol, matched_val,
+			bid1, bid1_vol, bid2, bid2_vol, bid3, bid3_vol,
+			ask1, ask1_vol, ask2, ask2_vol, ask3, ask3_vol,
+			total_f_buy_vol, total_f_sell_vol, total_f_buy_val, total_f_sell_val,
 			category
 		) VALUES %s
 		ON CONFLICT DO NOTHING

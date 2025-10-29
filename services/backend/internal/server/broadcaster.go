@@ -18,6 +18,13 @@ type MarketDataMessage struct {
 	F1ForeignShort float64 // F1 foreign sell volume
 	F1TotalBid     float64 // F1 total bid (long orders)
 	F1TotalAsk     float64 // F1 total ask (short orders)
+
+	// VN30 Stocks Data (Charts 4-6)
+	VN30TotalBuyOrder  float64 // Chart 4: Total buy orders
+	VN30TotalSellOrder float64 // Chart 4: Total sell orders
+	VN30BuyUp          float64 // Chart 5: Buy-up volume
+	VN30SellDown       float64 // Chart 5: Sell-down volume
+	VN30ForeignNet     float64 // Chart 6: Foreign net value
 }
 
 // StreamClient represents a connected client
@@ -113,13 +120,18 @@ func (b *Broadcaster) BroadcastMarketData(timestamp int64) {
 	b.mu.Unlock()
 
 	msg := MarketDataMessage{
-		Timestamp:      data.Timestamp,
-		VN30Value:      data.VN30Value,
-		HNXValue:       data.HNXValue,
-		F1ForeignLong:  data.F1ForeignLong,
-		F1ForeignShort: data.F1ForeignShort,
-		F1TotalBid:     data.F1TotalBid,
-		F1TotalAsk:     data.F1TotalAsk,
+		Timestamp:          data.Timestamp,
+		VN30Value:          data.VN30Value,
+		HNXValue:           data.HNXValue,
+		F1ForeignLong:      data.F1ForeignLong,
+		F1ForeignShort:     data.F1ForeignShort,
+		F1TotalBid:         data.F1TotalBid,
+		F1TotalAsk:         data.F1TotalAsk,
+		VN30TotalBuyOrder:  data.VN30TotalBuyOrder,
+		VN30TotalSellOrder: data.VN30TotalSellOrder,
+		VN30BuyUp:          data.VN30BuyUp,
+		VN30SellDown:       data.VN30SellDown,
+		VN30ForeignNet:     data.VN30ForeignNet,
 	}
 
 	// Broadcast to connected clients (synchronous, in-memory)
@@ -148,13 +160,18 @@ func (b *Broadcaster) asyncWriteToRedis(msg MarketDataMessage) {
 
 	// Convert to repository.MarketData
 	point := repository.MarketData{
-		Timestamp:      msg.Timestamp,
-		VN30Value:      msg.VN30Value,
-		HNXValue:       msg.HNXValue,
-		F1ForeignLong:  msg.F1ForeignLong,
-		F1ForeignShort: msg.F1ForeignShort,
-		F1TotalBid:     msg.F1TotalBid,
-		F1TotalAsk:     msg.F1TotalAsk,
+		Timestamp:          msg.Timestamp,
+		VN30Value:          msg.VN30Value,
+		HNXValue:           msg.HNXValue,
+		F1ForeignLong:      msg.F1ForeignLong,
+		F1ForeignShort:     msg.F1ForeignShort,
+		F1TotalBid:         msg.F1TotalBid,
+		F1TotalAsk:         msg.F1TotalAsk,
+		VN30TotalBuyOrder:  msg.VN30TotalBuyOrder,
+		VN30TotalSellOrder: msg.VN30TotalSellOrder,
+		VN30BuyUp:          msg.VN30BuyUp,
+		VN30SellDown:       msg.VN30SellDown,
+		VN30ForeignNet:     msg.VN30ForeignNet,
 	}
 
 	// Write to Redis Stream (non-blocking)

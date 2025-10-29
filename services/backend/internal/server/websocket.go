@@ -54,6 +54,13 @@ type WebSocketMessage struct {
 	FuturesContract string  `json:"futures,omitempty"`          // Futures contract to query (f1, f2, f3, f4)
 	FuturesResponse string  `json:"futures_contract,omitempty"` // Futures contract in response (f1, f2, f3, f4)
 	Error           string  `json:"error"`                      // For error messages
+
+	// VN30 Stocks Data (Charts 4-6)
+	VN30TotalBuyOrder  float64 `json:"vn30_total_buy_order"`  // Chart 4: Total buy orders
+	VN30TotalSellOrder float64 `json:"vn30_total_sell_order"` // Chart 4: Total sell orders
+	VN30BuyUp          float64 `json:"vn30_buy_up"`           // Chart 5: Buy-up volume
+	VN30SellDown       float64 `json:"vn30_sell_down"`        // Chart 5: Sell-down volume
+	VN30ForeignNet     float64 `json:"vn30_foreign_net"`      // Chart 6: Foreign net value
 }
 
 // NewWebSocketServer creates a new WebSocket server
@@ -121,15 +128,20 @@ func (ws *WebSocketServer) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 
 			// Convert to WebSocket message format
 			wsMsg := WebSocketMessage{
-				Type:           "data",
-				Timestamp:      msg.Timestamp,
-				VN30Value:      msg.VN30Value,
-				HNXValue:       msg.HNXValue, // Legacy field
-				F1Last:         msg.HNXValue, // Same as HNXValue for compatibility
-				F1ForeignLong:  msg.F1ForeignLong,
-				F1ForeignShort: msg.F1ForeignShort,
-				F1TotalBid:     msg.F1TotalBid,
-				F1TotalAsk:     msg.F1TotalAsk,
+				Type:               "data",
+				Timestamp:          msg.Timestamp,
+				VN30Value:          msg.VN30Value,
+				HNXValue:           msg.HNXValue, // Legacy field
+				F1Last:             msg.HNXValue, // Same as HNXValue for compatibility
+				F1ForeignLong:      msg.F1ForeignLong,
+				F1ForeignShort:     msg.F1ForeignShort,
+				F1TotalBid:         msg.F1TotalBid,
+				F1TotalAsk:         msg.F1TotalAsk,
+				VN30TotalBuyOrder:  msg.VN30TotalBuyOrder,
+				VN30TotalSellOrder: msg.VN30TotalSellOrder,
+				VN30BuyUp:          msg.VN30BuyUp,
+				VN30SellDown:       msg.VN30SellDown,
+				VN30ForeignNet:     msg.VN30ForeignNet,
 			}
 
 			// Send message to client using thread-safe writer
@@ -265,16 +277,21 @@ func (ws *WebSocketServer) handleHistoricalRequest(writer *connWriter, clientID 
 	// Send historical data as individual messages
 	for _, point := range data {
 		msg := WebSocketMessage{
-			Type:            "historical",
-			Timestamp:       point.Timestamp,
-			VN30Value:       point.VN30Value,
-			HNXValue:        point.HNXValue,
-			F1Last:          point.HNXValue,
-			F1ForeignLong:   point.F1ForeignLong,
-			F1ForeignShort:  point.F1ForeignShort,
-			F1TotalBid:      point.F1TotalBid,
-			F1TotalAsk:      point.F1TotalAsk,
-			FuturesResponse: futuresContract, // Include which futures contract this data is for
+			Type:               "historical",
+			Timestamp:          point.Timestamp,
+			VN30Value:          point.VN30Value,
+			HNXValue:           point.HNXValue,
+			F1Last:             point.HNXValue,
+			F1ForeignLong:      point.F1ForeignLong,
+			F1ForeignShort:     point.F1ForeignShort,
+			F1TotalBid:         point.F1TotalBid,
+			F1TotalAsk:         point.F1TotalAsk,
+			VN30TotalBuyOrder:  point.VN30TotalBuyOrder,
+			VN30TotalSellOrder: point.VN30TotalSellOrder,
+			VN30BuyUp:          point.VN30BuyUp,
+			VN30SellDown:       point.VN30SellDown,
+			VN30ForeignNet:     point.VN30ForeignNet,
+			FuturesResponse:    futuresContract, // Include which futures contract this data is for
 		}
 		if err := writer.WriteJSON(msg); err != nil {
 			ws.log.WithError(err).WithField("client_id", clientID).Error("failed to send historical data")
@@ -310,15 +327,20 @@ func (ws *WebSocketServer) handleCatchupRequest(writer *connWriter, clientID str
 	// Send catchup data
 	for _, point := range data {
 		msg := WebSocketMessage{
-			Type:           "catchup",
-			Timestamp:      point.Timestamp,
-			VN30Value:      point.VN30Value,
-			HNXValue:       point.HNXValue,
-			F1Last:         point.HNXValue,
-			F1ForeignLong:  point.F1ForeignLong,
-			F1ForeignShort: point.F1ForeignShort,
-			F1TotalBid:     point.F1TotalBid,
-			F1TotalAsk:     point.F1TotalAsk,
+			Type:               "catchup",
+			Timestamp:          point.Timestamp,
+			VN30Value:          point.VN30Value,
+			HNXValue:           point.HNXValue,
+			F1Last:             point.HNXValue,
+			F1ForeignLong:      point.F1ForeignLong,
+			F1ForeignShort:     point.F1ForeignShort,
+			F1TotalBid:         point.F1TotalBid,
+			F1TotalAsk:         point.F1TotalAsk,
+			VN30TotalBuyOrder:  point.VN30TotalBuyOrder,
+			VN30TotalSellOrder: point.VN30TotalSellOrder,
+			VN30BuyUp:          point.VN30BuyUp,
+			VN30SellDown:       point.VN30SellDown,
+			VN30ForeignNet:     point.VN30ForeignNet,
 		}
 		if err := writer.WriteJSON(msg); err != nil {
 			ws.log.WithError(err).WithField("client_id", clientID).Error("failed to send catchup data")

@@ -157,6 +157,25 @@ func main() {
 	currentMinute := now.Minute()
 	currentSecond := now.Second()
 
+	// Check if we have data for today - if not, clear old data and re-import
+	var todayDataCount int
+	checkQuery := `SELECT COUNT(*) FROM index_tick WHERE ts >= $1::date`
+	if err := pool.QueryRow(ctx, checkQuery, currentDate).Scan(&todayDataCount); err != nil {
+		log.WithError(err).Warn("failed to check for today's data")
+	}
+
+	if todayDataCount == 0 && currentHour >= 9 {
+		// No data for today and it's past 9 AM - clear old data and prepare for fresh import
+		log.Info("no data found for today - clearing old data and preparing fresh import")
+
+		truncateQuery := `TRUNCATE index_tick, futures_table CASCADE;`
+		if _, err := pool.Exec(ctx, truncateQuery); err != nil {
+			log.WithError(err).Warn("failed to truncate old data (non-critical)")
+		} else {
+			log.Info("old data cleared successfully")
+		}
+	}
+
 	// Determine if we should bulk insert historical data
 	// Bulk insert anytime from 9:00 AM onwards
 	indexIdx := 0
@@ -259,6 +278,24 @@ func main() {
 			"futures_position": futuresIdx,
 			"current_time":     now.Format("15:04:05"),
 		}).Info("bulk insert complete - starting real-time streaming from current position")
+
+		// Refresh continuous aggregates to include data from 9:00 AM today
+		log.Info("refreshing continuous aggregates to include today's data from market open")
+		marketOpenTime := time.Date(currentDate.Year(), currentDate.Month(), currentDate.Day(), 2, 0, 0, 0, time.UTC) // 9:00 AM Vietnam = 2:00 AM UTC
+
+		refreshQueries := []string{
+			fmt.Sprintf("CALL refresh_continuous_aggregate('index_tick_15s_cagg', '%s'::timestamptz, '%s'::timestamptz)",
+				marketOpenTime.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339)),
+			fmt.Sprintf("CALL refresh_continuous_aggregate('futures_15s_cagg', '%s'::timestamptz, '%s'::timestamptz)",
+				marketOpenTime.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339)),
+		}
+
+		for _, query := range refreshQueries {
+			if _, err := pool.Exec(ctx, query); err != nil {
+				log.WithError(err).Warn("failed to refresh continuous aggregate (non-critical)")
+			}
+		}
+		log.Info("continuous aggregates refreshed successfully")
 
 		// Backfill Redis stream with 15-second aggregated data
 		log.Info("backfilling Redis stream with aggregated historical data")
@@ -671,6 +708,7 @@ func insertIndexTick(ctx context.Context, pool *pgxpool.Pool, row IndexTickRow, 
 			$1, $2, $3, $4, $5,
 			$6, $7, $8, $9, $10, $11
 		)
+		ON CONFLICT DO NOTHING
 	`
 
 	_, err := pool.Exec(ctx, query,
@@ -709,6 +747,7 @@ func insertFutures(ctx context.Context, pool *pgxpool.Pool, row FuturesRow, time
 			$12, $13, $14, $15,
 			$16
 		)
+		ON CONFLICT DO NOTHING
 	`
 
 	_, err := pool.Exec(ctx, query,
@@ -785,6 +824,7 @@ func batchInsertIndexTick(ctx context.Context, pool *pgxpool.Pool, rows []IndexT
 			ts, timestamp, formatted_time, session, ticker,
 			last, change, pct_change, matched_vol, matched_val, category
 		) VALUES %s
+		ON CONFLICT DO NOTHING
 	`, strings.Join(valueStrings, ","))
 
 	_, err := pool.Exec(ctx, query, valueArgs...)
@@ -839,6 +879,7 @@ func batchInsertFutures(ctx context.Context, pool *pgxpool.Pool, rows []FuturesR
 			total_f_buy_vol, total_f_sell_vol, total_bid, total_ask,
 			category
 		) VALUES %s
+		ON CONFLICT DO NOTHING
 	`, strings.Join(valueStrings, ","))
 
 	_, err := pool.Exec(ctx, query, valueArgs...)

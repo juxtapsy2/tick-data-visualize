@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,20 +21,39 @@ type WebSocketServer struct {
 	log         *logger.Logger
 }
 
+// connWriter wraps a WebSocket connection with a mutex for safe concurrent writes
+type connWriter struct {
+	conn *websocket.Conn
+	mu   sync.Mutex
+}
+
+func (cw *connWriter) WriteJSON(v interface{}) error {
+	cw.mu.Lock()
+	defer cw.mu.Unlock()
+	return cw.conn.WriteJSON(v)
+}
+
+func (cw *connWriter) WriteMessage(messageType int, data []byte) error {
+	cw.mu.Lock()
+	defer cw.mu.Unlock()
+	return cw.conn.WriteMessage(messageType, data)
+}
+
 // WebSocketMessage represents a message sent/received over WebSocket
 type WebSocketMessage struct {
-	Type            string  `json:"type"`               // "subscribe", "historical", "data", "error"
-	Timestamp       int64   `json:"timestamp"`          // For data messages
-	VN30Value       float64 `json:"vn30"`               // VN30 index value
-	HNXValue        float64 `json:"hnx"`                // F1 futures last price (legacy field name)
-	F1Last          float64 `json:"f1_last"`            // F1 futures last price
-	F1ForeignLong   float64 `json:"f1_foreign_long"`    // F1 foreign buy volume
-	F1ForeignShort  float64 `json:"f1_foreign_short"`   // F1 foreign sell volume
-	F1TotalBid      float64 `json:"f1_total_bid"`       // F1 total bid (long orders)
-	F1TotalAsk      float64 `json:"f1_total_ask"`       // F1 total ask (short orders)
-	Date            string  `json:"date"`               // For historical requests
-	FuturesContract string  `json:"futures,omitempty"`  // Futures contract to query (f1, f2, f3, f4)
-	Error           string  `json:"error"`              // For error messages
+	Type            string  `json:"type"`                       // "subscribe", "historical", "data", "error"
+	Timestamp       int64   `json:"timestamp"`                  // For data messages
+	VN30Value       float64 `json:"vn30"`                       // VN30 index value
+	HNXValue        float64 `json:"hnx"`                        // F1 futures last price (legacy field name)
+	F1Last          float64 `json:"f1_last"`                    // F1 futures last price
+	F1ForeignLong   float64 `json:"f1_foreign_long"`            // F1 foreign buy volume
+	F1ForeignShort  float64 `json:"f1_foreign_short"`           // F1 foreign sell volume
+	F1TotalBid      float64 `json:"f1_total_bid"`               // F1 total bid (long orders)
+	F1TotalAsk      float64 `json:"f1_total_ask"`               // F1 total ask (short orders)
+	Date            string  `json:"date"`                       // For historical requests
+	FuturesContract string  `json:"futures,omitempty"`          // Futures contract to query (f1, f2, f3, f4)
+	FuturesResponse string  `json:"futures_contract,omitempty"` // Futures contract in response (f1, f2, f3, f4)
+	Error           string  `json:"error"`                      // For error messages
 }
 
 // NewWebSocketServer creates a new WebSocket server
@@ -66,6 +86,9 @@ func (ws *WebSocketServer) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 	clientID := uuid.New().String()
 	ws.log.WithField("client_id", clientID).Info("new websocket client connected")
 
+	// Wrap connection with mutex for safe concurrent writes
+	writer := &connWriter{conn: conn}
+
 	// Register with broadcaster
 	client := ws.broadcaster.Register(clientID)
 	defer ws.broadcaster.Unregister(clientID)
@@ -82,10 +105,10 @@ func (ws *WebSocketServer) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 	done := make(chan struct{})
 
 	// Start goroutine to read messages from client
-	go ws.readMessages(conn, clientID, done)
+	go ws.readMessages(writer, conn, clientID, done)
 
 	// Start goroutine to send ping messages
-	go ws.sendPings(conn, clientID, done)
+	go ws.sendPings(writer, clientID, done)
 
 	// Send real-time market data updates
 	for {
@@ -101,16 +124,16 @@ func (ws *WebSocketServer) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 				Type:           "data",
 				Timestamp:      msg.Timestamp,
 				VN30Value:      msg.VN30Value,
-				HNXValue:       msg.HNXValue,                // Legacy field
-				F1Last:         msg.HNXValue,                // Same as HNXValue for compatibility
+				HNXValue:       msg.HNXValue, // Legacy field
+				F1Last:         msg.HNXValue, // Same as HNXValue for compatibility
 				F1ForeignLong:  msg.F1ForeignLong,
 				F1ForeignShort: msg.F1ForeignShort,
 				F1TotalBid:     msg.F1TotalBid,
 				F1TotalAsk:     msg.F1TotalAsk,
 			}
 
-			// Send message to client
-			if err := conn.WriteJSON(wsMsg); err != nil {
+			// Send message to client using thread-safe writer
+			if err := writer.WriteJSON(wsMsg); err != nil {
 				ws.log.WithError(err).WithField("client_id", clientID).Error("failed to write message")
 				return
 			}
@@ -127,7 +150,7 @@ func (ws *WebSocketServer) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 }
 
 // readMessages reads messages from the WebSocket client
-func (ws *WebSocketServer) readMessages(conn *websocket.Conn, clientID string, done chan struct{}) {
+func (ws *WebSocketServer) readMessages(writer *connWriter, conn *websocket.Conn, clientID string, done chan struct{}) {
 	defer close(done)
 
 	for {
@@ -146,7 +169,7 @@ func (ws *WebSocketServer) readMessages(conn *websocket.Conn, clientID string, d
 			ws.log.WithField("client_id", clientID).Info("client subscribed to stream")
 			// Already registered, just acknowledge
 			ack := WebSocketMessage{Type: "subscribed"}
-			conn.WriteJSON(ack)
+			writer.WriteJSON(ack)
 
 		case "historical":
 			futuresContract := msg.FuturesContract
@@ -159,7 +182,7 @@ func (ws *WebSocketServer) readMessages(conn *websocket.Conn, clientID string, d
 				"futures":   futuresContract,
 			}).Info("historical data requested")
 
-			go ws.handleHistoricalRequest(conn, clientID, msg.Date, futuresContract)
+			go ws.handleHistoricalRequest(writer, clientID, msg.Date, futuresContract)
 
 		case "catchup":
 			futuresContract := msg.FuturesContract
@@ -172,7 +195,7 @@ func (ws *WebSocketServer) readMessages(conn *websocket.Conn, clientID string, d
 				"futures":   futuresContract,
 			}).Info("catchup data requested")
 
-			go ws.handleCatchupRequest(conn, clientID, msg.Timestamp, futuresContract)
+			go ws.handleCatchupRequest(writer, clientID, msg.Timestamp, futuresContract)
 
 		default:
 			ws.log.WithField("type", msg.Type).Warn("unknown message type")
@@ -181,14 +204,14 @@ func (ws *WebSocketServer) readMessages(conn *websocket.Conn, clientID string, d
 }
 
 // sendPings sends periodic ping messages to keep connection alive
-func (ws *WebSocketServer) sendPings(conn *websocket.Conn, clientID string, done chan struct{}) {
+func (ws *WebSocketServer) sendPings(writer *connWriter, clientID string, done chan struct{}) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+			if err := writer.WriteMessage(websocket.PingMessage, nil); err != nil {
 				ws.log.WithError(err).WithField("client_id", clientID).Debug("ping failed")
 				return
 			}
@@ -199,14 +222,14 @@ func (ws *WebSocketServer) sendPings(conn *websocket.Conn, clientID string, done
 }
 
 // handleHistoricalRequest handles requests for historical data
-func (ws *WebSocketServer) handleHistoricalRequest(conn *websocket.Conn, clientID string, date string, futuresContract string) {
+func (ws *WebSocketServer) handleHistoricalRequest(writer *connWriter, clientID string, date string, futuresContract string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	// Parse date
 	parsedDate, err := time.Parse("2006-01-02", date)
 	if err != nil {
-		ws.sendError(conn, fmt.Sprintf("invalid date format: %v", err))
+		ws.sendError(writer, fmt.Sprintf("invalid date format: %v", err))
 		return
 	}
 
@@ -235,32 +258,36 @@ func (ws *WebSocketServer) handleHistoricalRequest(conn *websocket.Conn, clientI
 	data, err := ws.repo.GetHistoricalData(ctx, startTime, endTime, futuresContract)
 	if err != nil {
 		ws.log.WithError(err).Error("failed to get historical data")
-		ws.sendError(conn, fmt.Sprintf("database error: %v", err))
+		ws.sendError(writer, fmt.Sprintf("database error: %v", err))
 		return
 	}
 
 	// Send historical data as individual messages
 	for _, point := range data {
 		msg := WebSocketMessage{
-			Type:           "historical",
-			Timestamp:      point.Timestamp,
-			VN30Value:      point.VN30Value,
-			HNXValue:       point.HNXValue,
-			F1Last:         point.HNXValue,
-			F1ForeignLong:  point.F1ForeignLong,
-			F1ForeignShort: point.F1ForeignShort,
-			F1TotalBid:     point.F1TotalBid,
-			F1TotalAsk:     point.F1TotalAsk,
+			Type:            "historical",
+			Timestamp:       point.Timestamp,
+			VN30Value:       point.VN30Value,
+			HNXValue:        point.HNXValue,
+			F1Last:          point.HNXValue,
+			F1ForeignLong:   point.F1ForeignLong,
+			F1ForeignShort:  point.F1ForeignShort,
+			F1TotalBid:      point.F1TotalBid,
+			F1TotalAsk:      point.F1TotalAsk,
+			FuturesResponse: futuresContract, // Include which futures contract this data is for
 		}
-		if err := conn.WriteJSON(msg); err != nil {
+		if err := writer.WriteJSON(msg); err != nil {
 			ws.log.WithError(err).WithField("client_id", clientID).Error("failed to send historical data")
 			return
 		}
 	}
 
-	// Send completion message
-	completion := WebSocketMessage{Type: "historical_complete"}
-	conn.WriteJSON(completion)
+	// Send completion message with futures contract identifier
+	completion := WebSocketMessage{
+		Type:            "historical_complete",
+		FuturesResponse: futuresContract,
+	}
+	writer.WriteJSON(completion)
 
 	ws.log.WithFields(map[string]interface{}{
 		"client_id": clientID,
@@ -269,14 +296,14 @@ func (ws *WebSocketServer) handleHistoricalRequest(conn *websocket.Conn, clientI
 }
 
 // handleCatchupRequest handles requests for catchup data from a timestamp
-func (ws *WebSocketServer) handleCatchupRequest(conn *websocket.Conn, clientID string, fromTimestamp int64, futuresContract string) {
+func (ws *WebSocketServer) handleCatchupRequest(writer *connWriter, clientID string, fromTimestamp int64, futuresContract string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	data, err := ws.repo.GetDataAfterTimestamp(ctx, fromTimestamp, futuresContract)
 	if err != nil {
 		ws.log.WithError(err).Error("failed to get catchup data")
-		ws.sendError(conn, fmt.Sprintf("database error: %v", err))
+		ws.sendError(writer, fmt.Sprintf("database error: %v", err))
 		return
 	}
 
@@ -293,7 +320,7 @@ func (ws *WebSocketServer) handleCatchupRequest(conn *websocket.Conn, clientID s
 			F1TotalBid:     point.F1TotalBid,
 			F1TotalAsk:     point.F1TotalAsk,
 		}
-		if err := conn.WriteJSON(msg); err != nil {
+		if err := writer.WriteJSON(msg); err != nil {
 			ws.log.WithError(err).WithField("client_id", clientID).Error("failed to send catchup data")
 			return
 		}
@@ -301,7 +328,7 @@ func (ws *WebSocketServer) handleCatchupRequest(conn *websocket.Conn, clientID s
 
 	// Send completion message
 	completion := WebSocketMessage{Type: "catchup_complete"}
-	conn.WriteJSON(completion)
+	writer.WriteJSON(completion)
 
 	ws.log.WithFields(map[string]interface{}{
 		"client_id": clientID,
@@ -310,12 +337,12 @@ func (ws *WebSocketServer) handleCatchupRequest(conn *websocket.Conn, clientID s
 }
 
 // sendError sends an error message to the client
-func (ws *WebSocketServer) sendError(conn *websocket.Conn, errorMsg string) {
+func (ws *WebSocketServer) sendError(writer *connWriter, errorMsg string) {
 	msg := WebSocketMessage{
 		Type:  "error",
 		Error: errorMsg,
 	}
-	conn.WriteJSON(msg)
+	writer.WriteJSON(msg)
 }
 
 // ServeHTTP implements http.Handler

@@ -103,6 +103,10 @@ COPY docker/nginx/nginx.conf /etc/nginx/http.d/default.conf
 # Copy supervisord configuration
 COPY docker/supervisord/supervisord.conf /etc/supervisord.conf
 
+# Copy entrypoint script
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # Create necessary directories
 RUN mkdir -p /var/log/supervisor /var/run/nginx /var/log/nginx
 
@@ -110,8 +114,8 @@ RUN mkdir -p /var/log/supervisor /var/run/nginx /var/log/nginx
 RUN chown -R app:app /app /usr/share/nginx/html && \
     chmod -R 755 /app
 
-# Expose port 80 (Nginx)
+# Expose port (Render will set $PORT dynamically, defaults to 80 locally)
 EXPOSE 80
 
-# Start supervisord as root (will drop privileges for individual programs)
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisord.conf"]
+# Start services via entrypoint (substitutes $PORT and starts supervisord)
+CMD ["/entrypoint.sh"]

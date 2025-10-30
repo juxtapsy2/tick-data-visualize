@@ -452,6 +452,16 @@ func (r *Repository) GetLatestData(ctx context.Context, futuresContract string) 
 		return nil, fmt.Errorf("query error: %w", err)
 	}
 
+	// Debug log the VN30 values
+	r.log.WithFields(map[string]interface{}{
+		"timestamp":          data.Timestamp,
+		"vn30_buy_order":     data.VN30TotalBuyOrder,
+		"vn30_sell_order":    data.VN30TotalSellOrder,
+		"vn30_buy_up":        data.VN30BuyUp,
+		"vn30_sell_down":     data.VN30SellDown,
+		"vn30_foreign_net":   data.VN30ForeignNet,
+	}).Info("GetLatestData result")
+
 	return &data, nil
 }
 

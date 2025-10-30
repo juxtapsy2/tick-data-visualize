@@ -147,6 +147,16 @@ func (b *Broadcaster) BroadcastMarketData(timestamp int64) {
 		VN30ForeignNet:     data.VN30ForeignNet,
 	}
 
+	// Debug log before broadcast
+	b.log.WithFields(map[string]interface{}{
+		"timestamp":          msg.Timestamp,
+		"vn30_buy_order":     msg.VN30TotalBuyOrder,
+		"vn30_sell_order":    msg.VN30TotalSellOrder,
+		"vn30_buy_up":        msg.VN30BuyUp,
+		"vn30_sell_down":     msg.VN30SellDown,
+		"vn30_foreign_net":   msg.VN30ForeignNet,
+	}).Info("Broadcasting message to clients")
+
 	// Broadcast to connected clients (synchronous, in-memory)
 	b.broadcast(msg)
 

@@ -126,6 +126,17 @@ func (ws *WebSocketServer) HandleWebSocket(w http.ResponseWriter, r *http.Reques
 				return
 			}
 
+			// Debug log received message from channel
+			ws.log.WithFields(map[string]interface{}{
+				"client_id":        clientID,
+				"timestamp":        msg.Timestamp,
+				"vn30_buy_order":   msg.VN30TotalBuyOrder,
+				"vn30_sell_order":  msg.VN30TotalSellOrder,
+				"vn30_buy_up":      msg.VN30BuyUp,
+				"vn30_sell_down":   msg.VN30SellDown,
+				"vn30_foreign_net": msg.VN30ForeignNet,
+			}).Info("Received message from channel for client")
+
 			// Convert to WebSocket message format
 			wsMsg := WebSocketMessage{
 				Type:               "data",

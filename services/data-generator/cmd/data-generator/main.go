@@ -197,8 +197,8 @@ func parseHOSE500Row(record []string, colMap map[string]int) (interface{}, error
 	row.Session = record[colMap["session"]]
 	row.Ticker = record[colMap["ticker"]]
 
-	// Parse order_type (nullable)
-	if orderType := record[colMap["order_type"]]; orderType != "" {
+	// Parse order_type (nullable) - CSV column is "order" not "order_type"
+	if orderType := record[colMap["order"]]; orderType != "" {
 		row.OrderType = &orderType
 	}
 

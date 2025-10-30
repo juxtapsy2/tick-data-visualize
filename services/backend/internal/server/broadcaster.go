@@ -99,6 +99,19 @@ func (b *Broadcaster) BroadcastMarketData(timestamp int64) {
 		return // Skip non-15s timestamps
 	}
 
+	// Check if within market hours (9:00 AM - 2:45 PM Vietnam time)
+	vietnamLocation := time.FixedZone("ICT", 7*60*60)
+	now := time.Now().In(vietnamLocation)
+	currentHour := now.Hour()
+	currentMinute := now.Minute()
+
+	// Market hours: 9:00 AM - 2:45 PM (14:45)
+	isWithinMarketHours := (currentHour >= 9 && currentHour < 14) || (currentHour == 14 && currentMinute <= 45)
+	if !isWithinMarketHours {
+		b.log.Debug("outside market hours - skipping WebSocket broadcast")
+		return
+	}
+
 	// Query the latest available data from continuous aggregate (VN30+HNX already joined with forward-fill!)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()

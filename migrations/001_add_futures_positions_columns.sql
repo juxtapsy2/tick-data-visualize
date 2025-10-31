@@ -42,4 +42,4 @@ GROUP BY bucket, ticker
 WITH NO DATA;
 
 -- Add retention policy (keep aggregated data for 90 days)
-SELECT add_retention_policy('futures_15s_cagg', INTERVAL '90 days', if_not_exists => true);
+SELECT add_retention_policy('futures_15s_cagg', INTERVAL '90 days', if_not_exists => true);Do

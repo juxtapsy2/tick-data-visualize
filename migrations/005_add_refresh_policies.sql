@@ -1,3 +1,4 @@
+
 -- Add automatic refresh policies for continuous aggregates
 -- These policies ensure the aggregates are automatically updated as new data arrives
 

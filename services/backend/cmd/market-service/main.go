@@ -288,13 +288,18 @@ func registerLifecycleHooks(lc fx.Lifecycle, log *logger.Logger, broadcaster *se
 					}
 
 					msg := server.MarketDataMessage{
-						Timestamp:      data.Timestamp,
-						VN30Value:      data.VN30Value,
-						HNXValue:       data.HNXValue,
-						F1ForeignLong:  data.F1ForeignLong,
-						F1ForeignShort: data.F1ForeignShort,
-						F1TotalBid:     data.F1TotalBid,
-						F1TotalAsk:     data.F1TotalAsk,
+						Timestamp:          data.Timestamp,
+						VN30Value:          data.VN30Value,
+						HNXValue:           data.HNXValue,
+						F1ForeignLong:      data.F1ForeignLong,
+						F1ForeignShort:     data.F1ForeignShort,
+						F1TotalBid:         data.F1TotalBid,
+						F1TotalAsk:         data.F1TotalAsk,
+						VN30TotalBuyOrder:  data.VN30TotalBuyOrder,
+						VN30TotalSellOrder: data.VN30TotalSellOrder,
+						VN30BuyUp:          data.VN30BuyUp,
+						VN30SellDown:       data.VN30SellDown,
+						VN30ForeignNet:     data.VN30ForeignNet,
 					}
 					broadcaster.BroadcastComplete(msg)
 					log.WithFields(map[string]interface{}{
@@ -325,13 +330,18 @@ func registerLifecycleHooks(lc fx.Lifecycle, log *logger.Logger, broadcaster *se
 
 						// Broadcast to all WebSocket clients with all fields
 						msg := server.MarketDataMessage{
-							Timestamp:      data.Timestamp,
-							VN30Value:      data.VN30Value,
-							HNXValue:       data.HNXValue,
-							F1ForeignLong:  data.F1ForeignLong,
-							F1ForeignShort: data.F1ForeignShort,
-							F1TotalBid:     data.F1TotalBid,
-							F1TotalAsk:     data.F1TotalAsk,
+							Timestamp:          data.Timestamp,
+							VN30Value:          data.VN30Value,
+							HNXValue:           data.HNXValue,
+							F1ForeignLong:      data.F1ForeignLong,
+							F1ForeignShort:     data.F1ForeignShort,
+							F1TotalBid:         data.F1TotalBid,
+							F1TotalAsk:         data.F1TotalAsk,
+							VN30TotalBuyOrder:  data.VN30TotalBuyOrder,
+							VN30TotalSellOrder: data.VN30TotalSellOrder,
+							VN30BuyUp:          data.VN30BuyUp,
+							VN30SellDown:       data.VN30SellDown,
+							VN30ForeignNet:     data.VN30ForeignNet,
 						}
 						broadcaster.BroadcastComplete(msg)
 

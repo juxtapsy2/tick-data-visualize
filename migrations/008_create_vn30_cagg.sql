@@ -8,27 +8,27 @@ CREATE MATERIALIZED VIEW vn30_15s_cagg
 WITH (timescaledb.continuous) AS
 SELECT
     time_bucket('15 seconds', ts) AS bucket,
-    SUM(
+    AVG(
         COALESCE(bid1 * bid1_vol, 0) +
         COALESCE(bid2 * bid2_vol, 0) +
         COALESCE(bid3 * bid3_vol, 0)
     ) AS total_buy_order,
-    SUM(
+    AVG(
         COALESCE(ask1 * ask1_vol, 0) +
         COALESCE(ask2 * ask2_vol, 0) +
         COALESCE(ask3 * ask3_vol, 0)
     ) AS total_sell_order,
-    SUM(CASE
+    AVG(CASE
         WHEN order_type = 'Buy' THEN COALESCE(matched_vol * last, 0)
         ELSE 0
     END) AS total_buy_up,
-    SUM(CASE
+    AVG(CASE
         WHEN order_type = 'Sell' THEN COALESCE(matched_vol * last, 0)
         ELSE 0
     END) AS total_sell_down,
-    SUM(COALESCE(total_f_buy_val, 0)) AS total_f_buy_val,
-    SUM(COALESCE(total_f_sell_val, 0)) AS total_f_sell_val,
-    SUM(COALESCE(total_f_buy_val, 0) - COALESCE(total_f_sell_val, 0)) AS foreign_net_val
+    AVG(COALESCE(total_f_buy_val, 0)) AS total_f_buy_val,
+    AVG(COALESCE(total_f_sell_val, 0)) AS total_f_sell_val,
+    AVG(COALESCE(total_f_buy_val, 0) - COALESCE(total_f_sell_val, 0)) AS foreign_net_val
 FROM hose500_second
 WHERE ticker IN (
     'ACB', 'BCM', 'BID', 'CTG', 'DGC', 'FPT', 'GAS', 'GVR', 'HDB', 'HPG',

@@ -8,27 +8,27 @@ CREATE MATERIALIZED VIEW vn30_15s_cagg
 WITH (timescaledb.continuous) AS
 SELECT
     time_bucket('15 seconds', ts) AS bucket,
-    AVG(
+    SUM(
         COALESCE(bid1 * bid1_vol, 0) +
         COALESCE(bid2 * bid2_vol, 0) +
         COALESCE(bid3 * bid3_vol, 0)
     ) AS total_buy_order,
-    AVG(
+    SUM(
         COALESCE(ask1 * ask1_vol, 0) +
         COALESCE(ask2 * ask2_vol, 0) +
         COALESCE(ask3 * ask3_vol, 0)
     ) AS total_sell_order,
-    AVG(CASE
+    SUM(CASE
         WHEN order_type = 'Buy' THEN COALESCE(matched_vol * last, 0)
         ELSE 0
     END) AS total_buy_up,
-    AVG(CASE
+    SUM(CASE
         WHEN order_type = 'Sell' THEN COALESCE(matched_vol * last, 0)
         ELSE 0
     END) AS total_sell_down,
-    AVG(COALESCE(total_f_buy_val, 0)) AS total_f_buy_val,
-    AVG(COALESCE(total_f_sell_val, 0)) AS total_f_sell_val,
-    AVG(COALESCE(total_f_buy_val, 0) - COALESCE(total_f_sell_val, 0)) AS foreign_net_val
+    SUM(COALESCE(total_f_buy_val, 0)) AS total_f_buy_val,
+    SUM(COALESCE(total_f_sell_val, 0)) AS total_f_sell_val,
+    SUM(COALESCE(total_f_buy_val, 0) - COALESCE(total_f_sell_val, 0)) AS foreign_net_val
 FROM hose500_second
 WHERE ticker IN (
     'ACB', 'BCM', 'BID', 'CTG', 'DGC', 'FPT', 'GAS', 'GVR', 'HDB', 'HPG',
@@ -39,6 +39,7 @@ GROUP BY bucket
 WITH NO DATA;
 
 -- Add refresh policy to update every 15 seconds
+SELECT remove_continuous_aggregate_policy('vn30_15s_cagg', if_exists => true);
 SELECT add_continuous_aggregate_policy('vn30_15s_cagg',
     start_offset => INTERVAL '1 day',
     end_offset => INTERVAL '15 seconds',

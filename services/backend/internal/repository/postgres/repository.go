@@ -84,6 +84,7 @@ func (r *Repository) GetHistoricalData(ctx context.Context, startTime, endTime t
 		),
 		vn30_stocks_buckets AS (
 			-- Query pre-computed continuous aggregate for VN30 stocks data
+			-- Already computed as average: SUM / COUNT for all records in each 15-second bucket
 			SELECT
 				bucket,
 				total_buy_order,

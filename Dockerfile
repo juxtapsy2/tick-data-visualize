@@ -1,25 +1,5 @@
 # ========================================
-# Stage 1: Build React Frontend
-# ========================================
-FROM node:20-alpine AS frontend-builder
-
-WORKDIR /build
-
-# Copy frontend package files
-COPY services/frontend/package*.json ./services/frontend/
-
-# Install dependencies
-WORKDIR /build/services/frontend
-RUN npm ci
-
-# Copy frontend source
-COPY services/frontend ./
-
-# Build the application
-RUN npm run build
-
-# ========================================
-# Stage 2: Build Go Backend
+# Stage 1: Build Go Backend
 # ========================================
 FROM golang:1.25.1-alpine3.22 AS backend-builder
 
@@ -94,9 +74,6 @@ COPY --from=data-generator-builder /build/data-generator /app/data-generator
 # Copy CSV data for data generator
 COPY services/data-generator/data /app/data
 
-# Copy frontend build to nginx directory
-COPY --from=frontend-builder /build/services/frontend/dist /usr/share/nginx/html
-
 # Copy nginx configuration
 COPY docker/nginx/nginx.conf /etc/nginx/http.d/default.conf
 
@@ -108,10 +85,10 @@ COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Create necessary directories
-RUN mkdir -p /var/log/supervisor /var/run/nginx /var/log/nginx
+RUN mkdir -p /var/log/supervisor /var/run/nginx /var/log/nginx /var/run/nginx /var/log/nginx
 
 # Fix permissions
-RUN chown -R app:app /app /usr/share/nginx/html && \
+RUN chown -R app:app /app && \
     chmod -R 755 /app
 
 # Expose port (Render will set $PORT dynamically, defaults to 80 locally)

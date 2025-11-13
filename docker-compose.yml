@@ -106,19 +106,6 @@ services:
     networks:
       - market-network
 
-  # Frontend (React + TypeScript + ECharts)
-  frontend:
-    build:
-      context: .
-      dockerfile: services/frontend/Dockerfile
-    container_name: market-frontend
-    ports:
-      - "3010:80"
-    depends_on:
-      - market-service
-    networks:
-      - market-network
-
 volumes:
   redis_data:
     driver: local

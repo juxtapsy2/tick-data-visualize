@@ -455,12 +455,12 @@ func (r *Repository) GetLatestData(ctx context.Context, futuresContract string) 
 
 	// Debug log the VN30 values
 	r.log.WithFields(map[string]interface{}{
-		"timestamp":          data.Timestamp,
-		"vn30_buy_order":     data.VN30TotalBuyOrder,
-		"vn30_sell_order":    data.VN30TotalSellOrder,
-		"vn30_buy_up":        data.VN30BuyUp,
-		"vn30_sell_down":     data.VN30SellDown,
-		"vn30_foreign_net":   data.VN30ForeignNet,
+		"timestamp":        data.Timestamp,
+		"vn30_buy_order":   data.VN30TotalBuyOrder,
+		"vn30_sell_order":  data.VN30TotalSellOrder,
+		"vn30_buy_up":      data.VN30BuyUp,
+		"vn30_sell_down":   data.VN30SellDown,
+		"vn30_foreign_net": data.VN30ForeignNet,
 	}).Info("GetLatestData result")
 
 	return &data, nil
@@ -613,6 +613,94 @@ func (r *Repository) GetLast15sAverages(ctx context.Context, indexTickers []stri
 	}
 
 	r.log.WithField("count", len(results)).Debug("retrieved last 15s averages from continuous aggregates (10-100x faster!)")
+	return results, nil
+}
+
+// GetBubbleChartData retrieves bubble chart data from raw hose500_second table
+// Queries per-second data for accurate weighted value calculation: (matched_vol * last) / weight * 100
+// Uses small time windows (15-30 seconds) to avoid lag with 30 tickers
+func (r *Repository) GetBubbleChartData(ctx context.Context, tickers []string, startTime, endTime time.Time) ([]repository.BubbleChartData, error) {
+	if len(tickers) == 0 {
+		return []repository.BubbleChartData{}, nil
+	}
+
+	// Query raw hose500_second table with per-row weighted calculation
+	// This gives accurate per-second bubbles for clearer visualization
+	query := `
+		SELECT
+			h.ticker,
+			h.order_type,
+			h.matched_vol,
+			h.last,
+			EXTRACT(EPOCH FROM h.ts)::bigint as timestamp,
+			(h.matched_vol * h.last) / w.weight * 100 as weighted_value
+		FROM hose500_second h
+		INNER JOIN vn30_weights w ON h.ticker = w.ticker
+		WHERE
+			h.ticker = ANY($1)
+			AND h.ts >= $2
+			AND h.ts <= $3
+			AND h.order_type IN ('Buy', 'Sell')
+			AND h.matched_vol IS NOT NULL
+			AND h.last IS NOT NULL
+			AND h.matched_vol > 0
+			AND h.last > 0
+			AND w.weight > 0
+			-- Market hours filter: 09:00:00 to 14:45:00, excluding 11:30:01 to 12:59:59
+			AND (
+				(EXTRACT(HOUR FROM h.ts AT TIME ZONE 'Asia/Ho_Chi_Minh') = 9)
+				OR (EXTRACT(HOUR FROM h.ts AT TIME ZONE 'Asia/Ho_Chi_Minh') = 10)
+				OR (
+					EXTRACT(HOUR FROM h.ts AT TIME ZONE 'Asia/Ho_Chi_Minh') = 11
+					AND EXTRACT(MINUTE FROM h.ts AT TIME ZONE 'Asia/Ho_Chi_Minh') < 30
+				)
+				OR (
+					EXTRACT(HOUR FROM h.ts AT TIME ZONE 'Asia/Ho_Chi_Minh') = 11
+					AND EXTRACT(MINUTE FROM h.ts AT TIME ZONE 'Asia/Ho_Chi_Minh') = 30
+					AND EXTRACT(SECOND FROM h.ts AT TIME ZONE 'Asia/Ho_Chi_Minh') = 0
+				)
+				OR (EXTRACT(HOUR FROM h.ts AT TIME ZONE 'Asia/Ho_Chi_Minh') = 13)
+				OR (
+					EXTRACT(HOUR FROM h.ts AT TIME ZONE 'Asia/Ho_Chi_Minh') = 14
+					AND EXTRACT(MINUTE FROM h.ts AT TIME ZONE 'Asia/Ho_Chi_Minh') <= 45
+				)
+			)
+		ORDER BY h.ts ASC;
+	`
+
+	rows, err := r.pool.Query(ctx, query, tickers, startTime, endTime)
+	if err != nil {
+		r.log.WithError(err).Error("failed to query bubble chart data")
+		return nil, fmt.Errorf("query error: %w", err)
+	}
+	defer rows.Close()
+
+	var results []repository.BubbleChartData
+	for rows.Next() {
+		var data repository.BubbleChartData
+		var matchedVol, last, weightedValue *float64
+		var orderType *string
+
+		if err := rows.Scan(&data.Ticker, &orderType, &matchedVol, &last, &data.Timestamp, &weightedValue); err != nil {
+			r.log.WithError(err).Error("failed to scan row")
+			return nil, fmt.Errorf("scan error: %w", err)
+		}
+
+		// Only include rows with non-null and non-zero values
+		if orderType != nil && matchedVol != nil && last != nil && weightedValue != nil && *matchedVol > 0 && *last > 0 {
+			data.OrderType = *orderType
+			data.MatchedVol = *matchedVol
+			data.Last = *last
+			data.WeightedValue = *weightedValue
+			results = append(results, data)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	r.log.WithField("count", len(results)).Debug("retrieved bubble chart data")
 	return results, nil
 }
 

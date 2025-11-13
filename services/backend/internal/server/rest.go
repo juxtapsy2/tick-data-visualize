@@ -50,6 +50,14 @@ type ChartResponse struct {
 	Error   string                 `json:"error,omitempty"`
 }
 
+// BubbleChartResponse represents the response for bubble chart data
+type BubbleChartResponse struct {
+	Success bool                          `json:"success"`
+	Data    []repository.BubbleChartData  `json:"data"`
+	Count   int                           `json:"count"`
+	Error   string                        `json:"error,omitempty"`
+}
+
 // HandleHistorical handles GET /api/v1/market/historical
 // Query params: from (ISO8601 or Unix timestamp), to (ISO8601 or Unix timestamp)
 // Defaults: from=9:00 AM Vietnam time today, to=now
@@ -258,6 +266,101 @@ func (h *RESTHandler) HandleChart(w http.ResponseWriter, r *http.Request) {
 		"futures": futuresTickers,
 		"count":   len(data),
 	}).Debug("chart data served")
+}
+
+// HandleBubbleChart handles GET /api/v1/market/bubble-chart
+// Query params: tickers (comma-separated), from (ISO8601 or Unix timestamp), to (ISO8601 or Unix timestamp)
+// Example: /api/v1/market/bubble-chart?tickers=VIC,VHM,VNM&from=2025-01-11T02:00:00Z&to=2025-01-11T08:00:00Z
+// Returns bubble chart data (ticker, order_type, matched_vol, last) from hose500_second table
+func (h *RESTHandler) HandleBubbleChart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		h.sendError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse query parameters
+	tickersParam := r.URL.Query().Get("tickers")
+	fromParam := r.URL.Query().Get("from")
+	toParam := r.URL.Query().Get("to")
+
+	// Parse tickers
+	tickers := h.parseCommaSeparated(tickersParam)
+	if len(tickers) == 0 {
+		h.sendError(w, "at least one ticker required", http.StatusBadRequest)
+		return
+	}
+
+	var fromTime, toTime time.Time
+	var err error
+
+	// Default 'from' to 9:00 AM Vietnam time today
+	if fromParam == "" {
+		vietnamLocation := time.FixedZone("ICT", 7*60*60)
+		now := time.Now().In(vietnamLocation)
+
+		fromTime = time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, vietnamLocation)
+
+		if now.Hour() < 9 {
+			fromTime = fromTime.Add(-24 * time.Hour)
+		}
+
+		fromTime = fromTime.UTC()
+	} else {
+		fromTime, err = h.parseTimestamp(fromParam)
+		if err != nil {
+			h.sendError(w, "invalid 'from' timestamp: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Default 'to' to 2:45 PM Vietnam time or now if before
+	if toParam == "" {
+		vietnamLocation := time.FixedZone("ICT", 7*60*60)
+		now := time.Now().In(vietnamLocation)
+
+		toTime = time.Date(now.Year(), now.Month(), now.Day(), 14, 45, 0, 0, vietnamLocation)
+
+		if now.Before(toTime) {
+			toTime = now
+		}
+
+		toTime = toTime.UTC()
+	} else {
+		toTime, err = h.parseTimestamp(toParam)
+		if err != nil {
+			h.sendError(w, "invalid 'to' timestamp: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Validate time range
+	if toTime.Before(fromTime) {
+		h.sendError(w, "'to' must be after 'from'", http.StatusBadRequest)
+		return
+	}
+
+	// Query database
+	ctx := r.Context()
+	data, err := h.repo.GetBubbleChartData(ctx, tickers, fromTime, toTime)
+	if err != nil {
+		h.log.WithError(err).Error("failed to get bubble chart data")
+		h.sendError(w, "database error", http.StatusInternalServerError)
+		return
+	}
+
+	// Send response
+	response := BubbleChartResponse{
+		Success: true,
+		Data:    data,
+		Count:   len(data),
+	}
+
+	h.sendJSON(w, response, http.StatusOK)
+
+	h.log.WithFields(map[string]interface{}{
+		"tickers": tickers,
+		"count":   len(data),
+	}).Debug("bubble chart data served")
 }
 
 // parseTimestamp parses a timestamp from either ISO8601 format or Unix timestamp

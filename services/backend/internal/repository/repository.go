@@ -29,6 +29,16 @@ type ChartData struct {
 	Value  float64
 }
 
+// BubbleChartData represents bubble chart data for a single ticker
+type BubbleChartData struct {
+	Ticker        string
+	OrderType     string  // "Buy" or "Sell"
+	MatchedVol    float64
+	Last          float64
+	Timestamp     int64   // Unix timestamp in seconds
+	WeightedValue float64 // Calculated as (total_matched_vol * avg_last) / weight
+}
+
 // MarketRepository defines the interface for market data operations
 type MarketRepository interface {
 	// GetHistoricalData retrieves market data for a time range with specified futures contract (f1, f2, f3, f4)
@@ -45,6 +55,9 @@ type MarketRepository interface {
 
 	// GetLast15sAverages retrieves AVG of last 15 seconds for multiple tickers
 	GetLast15sAverages(ctx context.Context, indexTickers []string, futuresTickers []string) ([]ChartData, error)
+
+	// GetBubbleChartData retrieves bubble chart data from hose500_second for specified tickers
+	GetBubbleChartData(ctx context.Context, tickers []string, startTime, endTime time.Time) ([]BubbleChartData, error)
 
 	// Close closes the repository connection
 	Close() error
@@ -66,6 +79,12 @@ type CacheRepository interface {
 
 	// GetStreamDataByTimeRange retrieves data from Redis Stream within a time range
 	GetStreamDataByTimeRange(ctx context.Context, fromTime, toTime time.Time) ([]MarketData, error)
+
+	// GetBubbleChartData retrieves cached bubble chart data for a specific date
+	GetBubbleChartData(ctx context.Context, date string) ([]BubbleChartData, error)
+
+	// SetBubbleChartData caches bubble chart data for a specific date
+	SetBubbleChartData(ctx context.Context, date string, data []BubbleChartData, ttl time.Duration) error
 
 	// Close closes the cache connection
 	Close() error

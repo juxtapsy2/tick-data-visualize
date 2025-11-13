@@ -28,6 +28,7 @@ func main() {
 			provideRedisCache,
 			provideBroadcaster,
 			provideWebSocketServer,
+			provideTickerWebSocketServer,
 			provideRESTHandler,
 			provideHealthService,
 			provideHTTPServer,
@@ -152,6 +153,15 @@ func provideWebSocketServer(
 	return server.NewWebSocketServer(broadcaster, repo, log)
 }
 
+// provideTickerWebSocketServer creates Ticker WebSocket server
+func provideTickerWebSocketServer(
+	repo repository.MarketRepository,
+	cache repository.CacheRepository,
+	log *logger.Logger,
+) *server.TickerWebSocketServer {
+	return server.NewTickerWebSocketServer(repo, cache, log)
+}
+
 // provideRESTHandler creates REST API handler
 func provideRESTHandler(repo repository.MarketRepository, cache repository.CacheRepository, log *logger.Logger) *server.RESTHandler {
 	return server.NewRESTHandler(repo, cache, log)
@@ -176,6 +186,7 @@ func provideHTTPServer(
 	healthSvc *health.Service,
 	broadcaster *server.Broadcaster,
 	wsSvc *server.WebSocketServer,
+	tickerWsSvc *server.TickerWebSocketServer,
 	restHandler *server.RESTHandler,
 	log *logger.Logger,
 ) *http.Server {
@@ -196,9 +207,13 @@ func provideHTTPServer(
 	mux.HandleFunc("/api/v1/market/historical", restHandler.HandleHistorical)
 	mux.HandleFunc("/api/v1/market/latest", restHandler.HandleLatest)
 	mux.HandleFunc("/api/v1/market/chart", restHandler.HandleChart)
+	mux.HandleFunc("/api/v1/market/bubble-chart", restHandler.HandleBubbleChart)
 
 	// WebSocket endpoint for real-time market data
 	mux.HandleFunc("/ws", wsSvc.HandleWebSocket)
+
+	// WebSocket endpoint for per-ticker bubble chart data
+	mux.HandleFunc("/ws/tickers", tickerWsSvc.HandleWebSocket)
 
 	server := &http.Server{
 		Addr:         cfg.Server.HTTPPort,

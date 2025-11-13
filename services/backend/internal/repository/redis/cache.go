@@ -287,3 +287,53 @@ func (c *Cache) GetStreamDataByTimeRange(ctx context.Context, fromTime, toTime t
 	return data, nil
 }
 
+// GetBubbleChartData retrieves cached bubble chart data for a specific date
+func (c *Cache) GetBubbleChartData(ctx context.Context, date string) ([]repository.BubbleChartData, error) {
+	key := fmt.Sprintf("market:bubble:%s", date)
+
+	data, err := c.client.Get(ctx, key).Result()
+	if err == redis.Nil {
+		c.log.WithField("date", date).Debug("bubble chart cache miss")
+		return nil, nil
+	} else if err != nil {
+		c.log.WithError(err).WithField("date", date).Error("redis get error for bubble chart")
+		return nil, fmt.Errorf("redis get error: %w", err)
+	}
+
+	var points []repository.BubbleChartData
+	if err := json.Unmarshal([]byte(data), &points); err != nil {
+		c.log.WithError(err).Error("failed to unmarshal cached bubble chart data")
+		return nil, fmt.Errorf("failed to unmarshal cached bubble chart data: %w", err)
+	}
+
+	c.log.WithFields(map[string]interface{}{
+		"date":  date,
+		"count": len(points),
+	}).Debug("bubble chart cache hit")
+
+	return points, nil
+}
+
+// SetBubbleChartData caches bubble chart data for a specific date
+func (c *Cache) SetBubbleChartData(ctx context.Context, date string, data []repository.BubbleChartData, ttl time.Duration) error {
+	key := fmt.Sprintf("market:bubble:%s", date)
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal bubble chart data: %w", err)
+	}
+
+	if err := c.client.Set(ctx, key, jsonData, ttl).Err(); err != nil {
+		c.log.WithError(err).WithField("date", date).Error("redis set error for bubble chart")
+		return fmt.Errorf("redis set error: %w", err)
+	}
+
+	c.log.WithFields(map[string]interface{}{
+		"date":  date,
+		"count": len(data),
+		"ttl":   ttl,
+	}).Debug("bubble chart data cached successfully")
+
+	return nil
+}
+
